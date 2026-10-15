@@ -1,0 +1,6 @@
+# Browser tooling scratch (playwright-cli)
+.playwright-cli/
+
+# OS / editor noise
+.DS_Store
+*.swp
