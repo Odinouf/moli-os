@@ -1,0 +1,366 @@
+diff --git a/locales/en/salon.json b/locales/en/salon.json
+index e6c0378..2f6046d 100644
+--- a/locales/en/salon.json
++++ b/locales/en/salon.json
+@@ -82,10 +82,6 @@
+   "salon.cameras.rien": "Nothing to report in the last 24 h.",
+ 
+   "salon.evenement.sonnette": "Someone rang",
+-  "salon.evenement.personne": "Person",
+-  "salon.evenement.vehicule": "Vehicle",
+-  "salon.evenement.animal": "Animal",
+-  "salon.evenement.colis": "Package",
+   "salon.evenement.mouvement": "Motion",
+ 
+   "salon.camera.agrandir": "{nom}: enlarge",
+diff --git a/locales/fr/salon.json b/locales/fr/salon.json
+index d45a421..66bd1bc 100644
+--- a/locales/fr/salon.json
++++ b/locales/fr/salon.json
+@@ -82,10 +82,6 @@
+   "salon.cameras.rien": "Rien de signalé depuis 24 h.",
+ 
+   "salon.evenement.sonnette": "On a sonné",
+-  "salon.evenement.personne": "Personne",
+-  "salon.evenement.vehicule": "Véhicule",
+-  "salon.evenement.animal": "Animal",
+-  "salon.evenement.colis": "Colis",
+   "salon.evenement.mouvement": "Mouvement",
+ 
+   "salon.camera.agrandir": "{nom} : agrandir",
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+index 69888ec..533657a 100644
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -87,7 +87,8 @@ export function doorOpen(id) {
+ 
+ export const leak = (id) => value(id, 'water_leak') === true || value(id, 'watersensor_state') === 'alarm';
+ 
+-export const motion = (id) => value(id, 'occupancy') === true || value(id, 'pir') === 'pir';
++export const motion = (id) =>
++  value(id, 'occupancy') === true || value(id, 'motion') === true || value(id, 'pir') === 'pir';
+ 
+ /** A sensor's battery (not a phone's: it charges). */
+ export function lowBattery(id) {
+diff --git a/web/src/maison/lib/icons.js b/web/src/maison/lib/icons.js
+index 4a90ddc..519d8a3 100644
+--- a/web/src/maison/lib/icons.js
++++ b/web/src/maison/lib/icons.js
+@@ -67,8 +67,10 @@ import {
+   mdiBedKingOutline,
+   mdiBedOutline,
+   mdiBellRingOutline,
++  mdiBird,
+   mdiCameraOutline,
+   mdiCarOutline,
++  mdiCat,
+   mdiCctv,
+   mdiChevronDown,
+   mdiChevronLeft,
+@@ -213,8 +215,10 @@ export const icons = {
+   'bed-king-outline': mdiBedKingOutline,
+   'bed-outline': mdiBedOutline,
+   bell: mdiBellRingOutline,
++  bird: mdiBird,
+   camera: mdiCameraOutline,
+   car: mdiCarOutline,
++  cat: mdiCat,
+   cctv: mdiCctv,
+   'chevron-down': mdiChevronDown,
+   'chevron-left': mdiChevronLeft,
+diff --git a/web/src/maison/maison.css b/web/src/maison/maison.css
+index 5cfbf17..385941a 100644
+--- a/web/src/maison/maison.css
++++ b/web/src/maison/maison.css
+@@ -118,16 +118,6 @@
+   margin-bottom: 16px;
+ }
+ 
+-.maison .card-head h2 {
+-  font-size: 15px;
+-  font-weight: 650;
+-  letter-spacing: 0.01em;
+-  color: var(--ink-2);
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-}
+-
+ .maison .card-head .more {
+   border: 0;
+   background: var(--surface-2);
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index c36b66b..d90b717 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -16,7 +16,6 @@
+   import RoomCard from '../ui/RoomCard.svelte';
+   import AccueilBadges from '../ui/AccueilBadges.svelte';
+   import PlanPreview from '../ui/PlanPreview.svelte';
+-  import PoolCard from '../ui/PoolCard.svelte';
+ 
+   const cfg = $derived(home.config ?? {});
+   const out = $derived(cfg.outdoor ?? {});
+@@ -241,10 +240,6 @@
+     </div>
+ 
+     <div class="col">
+-      <PlanPreview />
+-      <PoolCard />
+-      <Routines />
+-
+       {#if bell}
+         <section class="card doorbell" aria-label={t('maison.accueil.devant_porte')}>
+           <div class="card-head">
+@@ -254,6 +249,9 @@
+           <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
+         </section>
+       {/if}
++
++      <PlanPreview />
++      <Routines />
+     </div>
+   </div>
+ </div>
+diff --git a/web/src/maison/pages/Cameras.svelte b/web/src/maison/pages/Cameras.svelte
+index f80c545..57d3de5 100644
+--- a/web/src/maison/pages/Cameras.svelte
++++ b/web/src/maison/pages/Cameras.svelte
+@@ -19,12 +19,14 @@
+   const current = $derived(cameras.find((c) => c.id === open));
+ 
+   // What the camera saw today, from the history (rising edges only).
++  // The keys are Frigate's own object labels.
+   const KINDS = [
+     ['doorbell', 'salon.evenement.sonnette', 'bell'],
+-    ['person', 'salon.evenement.personne', 'account'],
+-    ['vehicle', 'salon.evenement.vehicule', 'car'],
+-    ['animal', 'salon.evenement.animal', 'dog'],
+-    ['package', 'salon.evenement.colis', 'package'],
++    ['person', 'pilotes.frigate.personnes', 'account'],
++    ['car', 'pilotes.frigate.voitures', 'car'],
++    ['dog', 'pilotes.frigate.chiens', 'dog'],
++    ['cat', 'pilotes.frigate.chats', 'cat'],
++    ['bird', 'pilotes.frigate.oiseaux', 'bird'],
+   ];
+   let seen = $state([]);
+   let seenLoading = $state(false);
+diff --git a/web/src/maison/ui/AccueilBadges.svelte b/web/src/maison/ui/AccueilBadges.svelte
+index 9400dfe..b93ee1b 100644
+--- a/web/src/maison/ui/AccueilBadges.svelte
++++ b/web/src/maison/ui/AccueilBadges.svelte
+@@ -24,6 +24,7 @@
+     return Object.values(hub.devices).find((d) => /tore/i.test(nameOf(d.id)))?.id ?? null;
+   });
+   const watts = $derived(meter ? value(meter, 'power') : null);
++  const wattsShown = $derived(watts != null ? Math.round(Math.abs(Number(watts))) : null);
+ 
+   const switches = $derived(home.config?.badges?.switches ?? []);
+ </script>
+@@ -43,7 +44,7 @@
+   {#if meter}
+     <a class="badge cool" href="#/energie">
+       <Icon name="bolt" size={16} />
+-      {t('maison.accueil.badges_conso', { value: watts != null ? `${Math.round(Number(watts))} W` : '—' })}
++      {t('maison.accueil.badges_conso', { value: wattsShown != null ? `${wattsShown} W` : '—' })}
+     </a>
+   {/if}
+ 
+diff --git a/web/src/maison/ui/CameraTile.svelte b/web/src/maison/ui/CameraTile.svelte
+index 2dd3ee4..45ba657 100644
+--- a/web/src/maison/ui/CameraTile.svelte
++++ b/web/src/maison/ui/CameraTile.svelte
+@@ -83,13 +83,20 @@
+ 
+   const EVENTS = [
+     ['doorbell', 'salon.evenement.sonnette', 'bell', 'alert'],
+-    ['person', 'salon.evenement.personne', 'account', 'warm'],
+-    ['vehicle', 'salon.evenement.vehicule', 'car', 'cool'],
+-    ['animal', 'salon.evenement.animal', 'dog', 'good'],
+-    ['package', 'salon.evenement.colis', 'package', 'good'],
++    ['person', 'pilotes.frigate.personnes', 'account', 'warm'],
++    ['car', 'pilotes.frigate.voitures', 'car', 'cool'],
++    ['dog', 'pilotes.frigate.chiens', 'dog', 'good'],
++    ['cat', 'pilotes.frigate.chats', 'cat', 'good'],
++    ['bird', 'pilotes.frigate.oiseaux', 'bird', 'good'],
+     ['motion', 'salon.evenement.mouvement', 'motion', ''],
+   ];
+-  const active = $derived(EVENTS.filter(([key]) => value(id, key) === true || (key === 'person' && Number(value(id, 'person')) > 0)));
++  // Frigate counts objects (an integer per label): a count above zero is a
++  // live event. A doorbell, a simple flag, is `true`.
++  const fired = (key) => {
++    const v = value(id, key);
++    return v === true || (typeof v === 'number' && v > 0);
++  };
++  const active = $derived(EVENTS.filter(([key]) => fired(key)));
+   const online = $derived(device(id)?.online !== false);
+ </script>
+ 
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+index fff0eb7..f87c871 100644
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -1,7 +1,18 @@
+ <script>
+   import { onMount } from 'svelte';
+   import { t } from '../../lib/i18n.svelte.js';
+-  import { nameOf, deviceOf, pinIcon, pinReading } from '../lib/home.svelte.js';
++  import {
++    nameOf,
++    deviceOf,
++    value,
++    pinIcon,
++    pinReading,
++    deviceKind,
++    isOn,
++    doorOpen,
++    leak,
++    motion,
++  } from '../lib/home.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   let floor = $state(null);
+@@ -12,6 +23,11 @@
+       .filter((p) => p.d),
+   );
+ 
++  const lit = (d) =>
++    ['light', 'group', 'plug', 'tv', 'speaker'].includes(deviceKind(d)) && isOn(d.id);
++  const opening = (d) => doorOpen(d.id) === true || motion(d.id);
++  const alarming = (d) => value(d.id, 'smoke') === true || leak(d.id);
++
+   onMount(async () => {
+     try {
+       const res = await fetch('/api/plan');
+@@ -30,7 +46,15 @@
+       <div class="frame">
+         <img src="/api/plan/images/{floor.image}" alt="" loading="lazy" />
+         {#each pins as p (p.d.id)}
+-          <span class="pin" style="left:{p.x * 100}%; top:{p.y * 100}%" title={nameOf(p.d.id)}>
++          <span
++            class="pin"
++            class:lit={lit(p.d)}
++            class:open={opening(p.d)}
++            class:alarm={alarming(p.d)}
++            class:off={p.d.online === false}
++            style="left:{p.x * 100}%; top:{p.y * 100}%"
++            title={nameOf(p.d.id)}
++          >
+             <span class="dot"><Icon name={pinIcon(p.d)} size={13} /></span>
+             {#if pinReading(p.d)}<span class="reading">{pinReading(p.d)}</span>{/if}
+           </span>
+@@ -54,13 +78,6 @@
+     transform: translateY(-2px);
+   }
+ 
+-  .card-head h2 {
+-    display: inline-flex;
+-    align-items: center;
+-    gap: 8px;
+-    font-size: 16px;
+-    font-weight: 700;
+-  }
+ 
+   .shot {
+     display: grid;
+@@ -105,6 +122,41 @@
+     box-shadow: var(--shadow-lift);
+   }
+ 
++  .pin.lit .dot {
++    background: var(--warm);
++    color: #1c1407;
++    box-shadow:
++      0 0 0 4px var(--warm-glow),
++      0 0 18px 4px var(--warm-glow);
++  }
++
++  .pin.open .dot {
++    background: var(--cool-soft);
++    color: var(--cool);
++  }
++
++  .pin.alarm .dot {
++    background: var(--alert);
++    color: #fff;
++    animation: pulse 1.2s ease-in-out infinite;
++  }
++
++  .pin.off {
++    opacity: 0.45;
++  }
++
++  @keyframes pulse {
++    50% {
++      box-shadow: 0 0 0 8px var(--alert-soft);
++    }
++  }
++
++  @media (prefers-reduced-motion: reduce) {
++    .pin.alarm .dot {
++      animation: none;
++    }
++  }
++
+   .reading {
+     margin-top: 2px;
+     padding: 1px 5px;
+diff --git a/web/src/maison/ui/RoomStrip.svelte b/web/src/maison/ui/RoomStrip.svelte
+index e024c2e..7ea6527 100644
+--- a/web/src/maison/ui/RoomStrip.svelte
++++ b/web/src/maison/ui/RoomStrip.svelte
+@@ -63,14 +63,6 @@
+     justify-content: space-between;
+   }
+ 
+-  .card-head h2 {
+-    display: inline-flex;
+-    align-items: center;
+-    gap: 8px;
+-    font-size: 16px;
+-    font-weight: 700;
+-  }
+-
+   .strip {
+     display: flex;
+     gap: 10px;
+diff --git a/web/src/maison/ui/SkyHero.svelte b/web/src/maison/ui/SkyHero.svelte
+index bccdd81..39bb5dd 100644
+--- a/web/src/maison/ui/SkyHero.svelte
++++ b/web/src/maison/ui/SkyHero.svelte
+@@ -99,16 +99,18 @@
+   }
+ 
+   h1 {
+-    font-size: 40px;
++    font-size: 22px;
+     font-weight: 750;
+     letter-spacing: -0.03em;
+     line-height: 1.1;
+   }
+ 
+   .time {
+-    font-size: 22px;
+-    font-weight: 400;
+-    color: var(--ink-2);
++    font-size: 40px;
++    font-weight: 600;
++    letter-spacing: -0.02em;
++    line-height: 1.1;
++    color: var(--ink);
+   }
+ 
+   .sky {
+@@ -205,7 +207,11 @@
+     }
+ 
+     h1 {
+-      font-size: 32px;
++      font-size: 20px;
++    }
++
++    .time {
++      font-size: 34px;
+     }
+ 
+     .sky {

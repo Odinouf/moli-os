@@ -1,0 +1,295 @@
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -170,6 +170,11 @@
+   return raw;
+ }
+ 
++export function tempIgnored(roomName) {
++  const def = (home.config?.rooms ?? []).find((r) => r.name === roomName);
++  return new Set(def?.temperature_ignore ?? []);
++}
++
+ /** The room a device is in, by the layout's names and aliases. */
+ export function roomOf(d) {
+   const raw = d?.label?.room || d?.native_room;
+@@ -441,13 +446,15 @@
+   return Number(v).toLocaleString(locale(), { maximumFractionDigits: digits, minimumFractionDigits: digits });
+ }
+ 
++export const HOUSE_TZ = 'Europe/Paris';
++
+ export function clock(ts) {
+-  return new Date(ts).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
++  return new Date(ts).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', timeZone: HOUSE_TZ });
+ }
+ 
+ /** « Samedi 3 octobre »: only the first letter up. */
+ export function longDate(ts) {
+-  const s = new Date(ts).toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long' });
++  const s = new Date(ts).toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long', timeZone: HOUSE_TZ });
+   return s.charAt(0).toUpperCase() + s.slice(1);
+ }
+ 
+@@ -471,7 +478,7 @@
+ }
+ 
+ export function greeting(ts) {
+-  const h = new Date(ts).getHours();
++  const h = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: HOUSE_TZ }).format(new Date(ts)));
+   if (h < 5) return t('commun.salut.nuit');
+   if (h < 12) return t('commun.salut.matin');
+   if (h < 18) return t('commun.salut.apres_midi');
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -1,6 +1,6 @@
+ <script>
+   import { onMount } from 'svelte';
+-  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, act, pending } from '../lib/home.svelte.js';
++  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, act, pending, HOUSE_TZ } from '../lib/home.svelte.js';
+   import { isPrinter, phase } from '../lib/printers.js';
+   import { t, locale } from '../../lib/i18n.svelte.js';
+   import Icon from '../ui/Icon.svelte';
+@@ -28,7 +28,6 @@
+   });
+ 
+   const lights = $derived(cfg.favorites?.lights ?? []);
+-  const litCount = $derived(lights.filter((l) => [l.id, ...(l.also ?? [])].some((i) => isOn(i))).length);
+ 
+   // Lumières: condensed by default (pads and ambiances as icons alone),
+   // names and readings on demand. Remembered for this device, like the
+@@ -173,7 +172,7 @@
+       {#if talkers.length}
+         <span class="sep" aria-hidden="true"></span>
+         <button class="hush" class:on={quiet} aria-pressed={quiet} onclick={toggleQuiet} title={quiet ? t('maison.accueil.sonos_reparle') : t('maison.accueil.sonos_coupe')}>
+-          <Icon name={quiet ? 'volume-off' : 'speaker'} size={16} />{quiet && quietUntil ? t('maison.accueil.sonos_muette_jusqua', { time: new Date(quietUntil).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) }) : t('maison.accueil.sonos_muette')}
++          <Icon name={quiet ? 'volume-off' : 'speaker'} size={16} />{quiet && quietUntil ? t('maison.accueil.sonos_muette_jusqua', { time: new Date(quietUntil).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', timeZone: HOUSE_TZ }) }) : t('maison.accueil.sonos_muette')}
+         </button>
+       {/if}
+     </div>
+@@ -200,9 +199,8 @@
+         <RoomCard {room} icons={lightsCompact} />
+       {/each}
+ 
+-      <section class="card lights">
++      <section class="card lights" aria-label={t('maison.accueil.lumieres')}>
+         <div class="card-head">
+-          <h2><Icon name="light" size={18} />{t('maison.accueil.lumieres')} <span class="count">{litCount ? t('maison.accueil.allumees', { count: litCount }) : t('maison.accueil.tout_eteint')}</span></h2>
+           <div class="head-actions">
+             <div class="look" role="radiogroup" aria-label={t('maison.pieces.affichage')}>
+               <button role="radio" aria-checked={!lightsCompact} class:active={!lightsCompact} onclick={() => setLightsCompact(false)} aria-label={t('maison.pieces.avec_noms')} title={t('maison.pieces.avec_noms')}>Aa</button>
+@@ -232,8 +230,7 @@
+       </section>
+ 
+       {#if (cfg.favorites?.climate ?? []).length}
+-        <section class="card climate">
+-          <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
++        <section class="card climate" aria-label={t('maison.accueil.clim')}>
+           <div class="clims">
+             {#each cfg.favorites?.climate ?? [] as c (c.id)}
+               <ClimateCard id={c.id} name={c.name} />
+@@ -249,9 +246,8 @@
+       <Routines />
+ 
+       {#if bell}
+-        <section class="card doorbell">
++        <section class="card doorbell" aria-label={t('maison.accueil.devant_porte')}>
+           <div class="card-head">
+-            <h2><Icon name="bell" size={18} />{t('maison.accueil.devant_porte')}</h2>
+             <a class="more" href="#/cameras" aria-label={t('maison.accueil.toutes_cameras')}><Icon name="arrow-top-right" size={18} /></a>
+           </div>
+           <CameraTile id={bell.id} name={bell.name} refresh={15} />
+diff --git a/web/src/maison/ui/RoomStrip.svelte b/web/src/maison/ui/RoomStrip.svelte
+--- a/web/src/maison/ui/RoomStrip.svelte
++++ b/web/src/maison/ui/RoomStrip.svelte
+@@ -3,7 +3,7 @@
+   // a sensor knows it, the humidity. The colour follows the temperature
+   // (cold blue → hot red), so the page reads at arm's length. A tap opens
+   // the room's page with all its lights.
+-  import { home, roomList, value, num } from '../lib/home.svelte.js';
++  import { home, roomList, value, num, tempIgnored } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+@@ -16,7 +16,8 @@
+         const room = byName.get(def.name);
+         const list = room ? [...room.sensors, ...room.climates] : [];
+         const online = list.filter((d) => d.online !== false);
+-        const temps = online.map((d) => value(d.id, 'temperature') ?? value(d.id, 'temp_current') ?? value(d.id, 'local_temperature')).filter((x) => typeof x === 'number');
++        const skip = tempIgnored(def.name);
++        const temps = online.filter((d) => !skip.has(d.id)).map((d) => value(d.id, 'temperature') ?? value(d.id, 'temp_current') ?? value(d.id, 'local_temperature')).filter((x) => typeof x === 'number');
+         const hums = online.map((d) => value(d.id, 'humidity') ?? value(d.id, 'humidity_value')).filter((x) => typeof x === 'number');
+         const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+         return { name: def.name, icon: def.icon ?? 'home', temp: avg(temps), humidity: avg(hums) };
+@@ -30,7 +31,6 @@
+ {#if rooms.length}
+   <section class="card rooms" aria-label={t('maison.accueil.pieces_titre')}>
+     <div class="card-head">
+-      <h2><Icon name="home" size={18} />{t('maison.accueil.pieces_titre')}</h2>
+       <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
+     </div>
+     <div class="strip">
+diff --git a/web/src/maison/ui/RoomCard.svelte b/web/src/maison/ui/RoomCard.svelte
+--- a/web/src/maison/ui/RoomCard.svelte
++++ b/web/src/maison/ui/RoomCard.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf } from '../lib/home.svelte.js';
++  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf, tempIgnored } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+   import LightTile from './LightTile.svelte';
+@@ -68,8 +68,9 @@
+   // ---- the room's temperature ----------------------------------------------------------
+ 
+   const temp = $derived.by(() => {
++    const skip = tempIgnored(room.name);
+     const readings = [...room.sensors, ...room.climates]
+-      .filter((d) => d.online !== false)
++      .filter((d) => d.online !== false && !skip.has(d.id))
+       .map((d) => value(d.id, 'temperature') ?? value(d.id, 'temp_current'))
+       .filter((x) => typeof x === 'number');
+     return readings.length ? readings.reduce((a, b) => a + b, 0) / readings.length : null;
+diff --git a/web/src/maison/ui/WeekWeather.svelte b/web/src/maison/ui/WeekWeather.svelte
+--- a/web/src/maison/ui/WeekWeather.svelte
++++ b/web/src/maison/ui/WeekWeather.svelte
+@@ -21,9 +21,6 @@
+ 
+ {#if week.length}
+   <section class="card week" aria-label={t('maison.accueil.semaine')}>
+-    <div class="card-head">
+-      <h2><Icon name="sun" size={18} />{t('maison.accueil.semaine')}</h2>
+-    </div>
+     <ol class="rows">
+       {#each week as d, i (d.date)}
+         {@const s = weatherOf(d.code, true)}
+diff --git a/web/src/maison/ui/HeatingBar.svelte b/web/src/maison/ui/HeatingBar.svelte
+--- a/web/src/maison/ui/HeatingBar.svelte
++++ b/web/src/maison/ui/HeatingBar.svelte
+@@ -45,12 +45,11 @@
+ 
+ {#if id}
+   <section class="card heating" aria-label={t('maison.accueil.chauffage')}>
+-    <div class="head">
+-      <h2><Icon name="fire" size={18} />{t('maison.accueil.chauffage')}</h2>
+-      {#if local != null}
++    {#if local != null}
++      <div class="head">
+         <span class="now num">{t('maison.accueil.chauffage_ambiance', { temp: Math.round(Number(local)) })}</span>
+-      {/if}
+-    </div>
++      </div>
++    {/if}
+     <div class="buttons" role="radiogroup" aria-label={t('maison.accueil.chauffage')}>
+       <button role="radio" aria-checked={current === 'confort'} class:on={current === 'confort'} disabled={busy} onclick={() => choose('confort')}>
+         <Icon name="fire" size={16} />{t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -25,10 +25,6 @@
+ </script>
+ 
+ <a class="card plan" href="#/plan" aria-label={t('maison.accueil.plan_ouvrir')}>
+-  <div class="card-head">
+-    <h2><Icon name="home-roof" size={18} />{t('maison.accueil.plan')}</h2>
+-    <span class="more" aria-hidden="true"><Icon name="arrow-top-right" size={18} /></span>
+-  </div>
+   {#if floor?.image}
+     <div class="shot">
+       <div class="frame">
+diff --git a/web/src/maison/ui/PoolCard.svelte b/web/src/maison/ui/PoolCard.svelte
+--- a/web/src/maison/ui/PoolCard.svelte
++++ b/web/src/maison/ui/PoolCard.svelte
+@@ -1,7 +1,6 @@
+ <script>
+   import { home, value, num, isOn, reachable, device, powerKey } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+-  import Icon from './Icon.svelte';
+ 
+   const out = $derived(home.config?.outdoor ?? {});
+   const pool = $derived(out.pool);
+@@ -12,10 +11,11 @@
+ </script>
+ 
+ <a class="card pool" href="#/dehors" aria-label={t('maison.accueil.piscine_ouvrir')}>
+-  <div class="card-head">
+-    <h2><Icon name="pool" size={18} />{t('maison.accueil.piscine')}</h2>
+-    {#if look === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else if look === false}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
+-  </div>
++  {#if look === true || look === false}
++    <div class="card-head">
++      {#if look === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
++    </div>
++  {/if}
+   <div class="facts">
+     <div><small>{t('maison.dehors.eau')}</small><b class="num">{temp != null ? `${num(temp, 1)}°` : '—'}</b></div>
+     <div>
+diff --git a/web/src/maison/ui/Routines.svelte b/web/src/maison/ui/Routines.svelte
+--- a/web/src/maison/ui/Routines.svelte
++++ b/web/src/maison/ui/Routines.svelte
+@@ -55,9 +55,8 @@
+ </script>
+ 
+ {#if list.length}
+-  <section class="card routines">
++  <section class="card routines" aria-label={t('automatismes.routines.titre')}>
+     <div class="card-head">
+-      <h2><Icon name="hand" size={18} />{t('automatismes.routines.titre')}</h2>
+       <a class="more" href="#/automatismes" aria-label={t('automatismes.routines.tous')}><Icon name="arrow-top-right" size={18} /></a>
+     </div>
+     <div class="buttons">
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -46,14 +46,6 @@
+   "maison.accueil.toutes_cameras": "Toutes les caméras",
+   "maison.accueil.dernier_passage": "Dernier passage {when}",
+   "maison.accueil.personne": "Personne depuis deux jours",
+-  "maison.accueil.telecommande": "Télécommande",
+-  "maison.accueil.tele_allumee": "La télé est allumée",
+-  "maison.accueil.tele_veille": "La télé est en veille",
+-  "maison.accueil.son_joue": "le son joue",
+-  "maison.accueil.dehors": "Dehors",
+-  "maison.accueil.air": "Air",
+-  "maison.accueil.humidite": "Humidité",
+-  "maison.accueil.piscine": "Piscine",
+   "maison.accueil.pieces_titre": "Pièces",
+   "maison.accueil.sans_mesure": "pas de mesure",
+   "maison.accueil.semaine": "La semaine",
+@@ -219,8 +211,6 @@
+   "maison.accueil.badges_portes_fermees": "Portes fermées",
+   "maison.accueil.badges_portes_muettes": "Portes : état inconnu",
+   "maison.accueil.badges_conso": "{value} en direct",
+-  "maison.accueil.horloge": "Horloge",
+-  "maison.accueil.plan": "Plan de la maison",
+   "maison.accueil.plan_ouvrir": "Ouvrir le plan",
+   "maison.accueil.plan_vide": "Aucun plan pour l’instant.",
+   "maison.accueil.piscine_ouvrir": "Ouvrir la piscine",
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -46,14 +46,6 @@
+   "maison.accueil.toutes_cameras": "All cameras",
+   "maison.accueil.dernier_passage": "Last seen {when}",
+   "maison.accueil.personne": "No one for two days",
+-  "maison.accueil.telecommande": "Remote",
+-  "maison.accueil.tele_allumee": "The TV is on",
+-  "maison.accueil.tele_veille": "The TV is on standby",
+-  "maison.accueil.son_joue": "sound is playing",
+-  "maison.accueil.dehors": "Outside",
+-  "maison.accueil.air": "Air",
+-  "maison.accueil.humidite": "Humidity",
+-  "maison.accueil.piscine": "Pool",
+   "maison.air.tres_bon": "Very good",
+   "maison.air.bon": "Good",
+   "maison.air.moyen": "Moderate",
+@@ -211,8 +203,6 @@
+   "maison.accueil.badges_portes_fermees": "Doors closed",
+   "maison.accueil.badges_portes_muettes": "Doors: unknown state",
+   "maison.accueil.badges_conso": "{value} live",
+-  "maison.accueil.horloge": "Clock",
+-  "maison.accueil.plan": "House plan",
+   "maison.accueil.plan_ouvrir": "Open the plan",
+   "maison.accueil.plan_vide": "No plan yet.",
+   "maison.accueil.piscine_ouvrir": "Open the pool",
