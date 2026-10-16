@@ -1,0 +1,669 @@
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+index f4ef375..01e4b8a 100644
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -46,13 +46,6 @@
+   "maison.accueil.toutes_cameras": "All cameras",
+   "maison.accueil.dernier_passage": "Last seen {when}",
+   "maison.accueil.personne": "No one for two days",
+-  "maison.accueil.telecommande": "Remote",
+-  "maison.accueil.tele_allumee": "The TV is on",
+-  "maison.accueil.tele_veille": "The TV is on standby",
+-  "maison.accueil.son_joue": "sound is playing",
+-  "maison.accueil.dehors": "Outside",
+-  "maison.accueil.air": "Air",
+-  "maison.accueil.humidite": "Humidity",
+   "maison.accueil.piscine": "Pool",
+   "maison.air.tres_bon": "Very good",
+   "maison.air.bon": "Good",
+@@ -211,7 +204,6 @@
+   "maison.accueil.badges_portes_fermees": "Doors closed",
+   "maison.accueil.badges_portes_muettes": "Doors: unknown state",
+   "maison.accueil.badges_conso": "{value} live",
+-  "maison.accueil.horloge": "Clock",
+   "maison.accueil.plan": "House plan",
+   "maison.accueil.plan_ouvrir": "Open the plan",
+   "maison.accueil.plan_vide": "No plan yet.",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index b490aa7..803c309 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -46,13 +46,6 @@
+   "maison.accueil.toutes_cameras": "Toutes les caméras",
+   "maison.accueil.dernier_passage": "Dernier passage {when}",
+   "maison.accueil.personne": "Personne depuis deux jours",
+-  "maison.accueil.telecommande": "Télécommande",
+-  "maison.accueil.tele_allumee": "La télé est allumée",
+-  "maison.accueil.tele_veille": "La télé est en veille",
+-  "maison.accueil.son_joue": "le son joue",
+-  "maison.accueil.dehors": "Dehors",
+-  "maison.accueil.air": "Air",
+-  "maison.accueil.humidite": "Humidité",
+   "maison.accueil.piscine": "Piscine",
+   "maison.accueil.pieces_titre": "Pièces",
+   "maison.accueil.sans_mesure": "pas de mesure",
+@@ -219,7 +212,6 @@
+   "maison.accueil.badges_portes_fermees": "Portes fermées",
+   "maison.accueil.badges_portes_muettes": "Portes : état inconnu",
+   "maison.accueil.badges_conso": "{value} en direct",
+-  "maison.accueil.horloge": "Horloge",
+   "maison.accueil.plan": "Plan de la maison",
+   "maison.accueil.plan_ouvrir": "Ouvrir le plan",
+   "maison.accueil.plan_vide": "Aucun plan pour l’instant.",
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+index 5621751..a10976a 100644
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -230,6 +230,46 @@ export function deviceKind(d) {
+   return 'sensor';
+ }
+ 
++// ---- the plan -------------------------------------------------------------------
++
++const PIN_ICON = { light: 'light', group: 'light-group', plug: 'power', climate: 'air-conditioner', camera: 'cctv', speaker: 'speaker', tv: 'tv', cover: 'shutter' };
++const pointHas = (d, key) => d.points.some((p) => p.key === key);
++
++/** The icon a plan pin (or a token on the Plan page) shows for a device. */
++export function pinIcon(d) {
++  const kind = deviceKind(d);
++  if (PIN_ICON[kind]) return PIN_ICON[kind];
++  if (pointHas(d, 'smoke')) return 'fire';
++  if (pointHas(d, 'water_leak') || pointHas(d, 'watersensor_state')) return 'water';
++  if (pointHas(d, 'contact') || pointHas(d, 'doorcontact_state')) return 'door';
++  if (pointHas(d, 'occupancy') || pointHas(d, 'motion') || pointHas(d, 'pir')) return 'motion';
++  if (pointHas(d, 'temperature') || pointHas(d, 'temp_current')) return 'thermometer';
++  return 'info';
++}
++
++/** A short reading next to a plan pin. A drawn floor keeps it to power
++ *  (the temperature would crowd a floor plan that already shows fixtures). */
++export function pinReading(d, { drawn = false } = {}) {
++  const temp = value(d.id, 'temperature') ?? value(d.id, 'temp_current');
++  if (typeof temp === 'number' && deviceKind(d) !== 'climate' && !drawn) return `${num(temp, 1)}°`;
++  const p = value(d.id, 'power') ?? value(d.id, 'cur_power');
++  if (typeof p === 'number' && p >= 1) return `${num(p)} W`;
++  return null;
++}
++
++/** A device id as the hub knows it: the plan may carry an older spelling
++ *  (a case drift after a rename), so the canonical key wins. */
++export function canonicalId(id) {
++  if (hub.devices[id]) return id;
++  const lower = String(id).toLowerCase();
++  return Object.keys(hub.devices).find((k) => k.toLowerCase() === lower) ?? id;
++}
++
++/** The device a plan id points at, tolerating that case drift. */
++export function deviceOf(id) {
++  return hub.devices[canonicalId(id)] ?? null;
++}
++
+ /** Rooms with their devices sorted by kind, the layout's order first. */
+ export function roomList() {
+   const defs = home.config?.rooms ?? [];
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index 8d3a445..b252cad 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -6,7 +6,6 @@
+   import Icon from '../ui/Icon.svelte';
+   import LightTile from '../ui/LightTile.svelte';
+   import ClimateCard from '../ui/ClimateCard.svelte';
+-  import EnergyCard from '../ui/EnergyCard.svelte';
+   import CameraTile from '../ui/CameraTile.svelte';
+   import AmbiancePicker from '../ui/AmbiancePicker.svelte';
+   import Routines from '../ui/Routines.svelte';
+@@ -16,7 +15,6 @@
+   import RoomStrip from '../ui/RoomStrip.svelte';
+   import RoomCard from '../ui/RoomCard.svelte';
+   import AccueilBadges from '../ui/AccueilBadges.svelte';
+-  import HomeClock from '../ui/HomeClock.svelte';
+   import PlanPreview from '../ui/PlanPreview.svelte';
+   import PoolCard from '../ui/PoolCard.svelte';
+ 
+@@ -32,6 +30,25 @@
+   const lights = $derived(cfg.favorites?.lights ?? []);
+   const litCount = $derived(lights.filter((l) => [l.id, ...(l.also ?? [])].some((i) => isOn(i))).length);
+ 
++  // Lumières: condensed by default (pads and ambiances as icons alone),
++  // names and readings on demand. Remembered for this device, like the
++  // Pièces page.
++  let lightsCompact = $state((() => {
++    try {
++      return localStorage.getItem('moli.lights-look') !== 'detail';
++    } catch {
++      return true;
++    }
++  })());
++  function setLightsCompact(v) {
++    lightsCompact = v;
++    try {
++      localStorage.setItem('moli.lights-look', v ? 'compact' : 'detail');
++    } catch {
++      /* remembered for this visit only */
++    }
++  }
++
+   // Ambiances, room by room (the last room chosen is remembered here).
+   const moodRooms = $derived(roomList().map((r) => ({ name: r.name, lamps: lampsOf(r) })).filter((r) => r.lamps.length));
+   let moodPick = $state((() => {
+@@ -128,24 +145,6 @@
+     return list;
+   });
+ 
+-  const tv = $derived(cfg.salon?.tv);
+-  const speaker = $derived(cfg.salon?.speaker);
+-  const tvOn = $derived(value(tv, 'power') === true);
+-  const playing = $derived(value(speaker, 'playing') === true);
+-  const aqi = $derived(value(out.air, 'aqi'));
+-  const aqiWord = $derived(
+-    aqi == null
+-      ? '—'
+-      : aqi <= 20
+-        ? t('maison.air.tres_bon')
+-        : aqi <= 40
+-          ? t('maison.air.bon')
+-          : aqi <= 60
+-            ? t('maison.air.moyen')
+-            : aqi <= 80
+-              ? t('maison.air.mediocre')
+-              : t('maison.air.mauvais'),
+-  );
+   const bell = $derived((cfg.favorites?.cameras ?? [])[0]);
+ 
+   // The last real passage at the door (the history knows; the live value
+@@ -198,17 +197,23 @@
+       <HeatingBar />
+ 
+       {#each rooms as room (room.name)}
+-        <RoomCard {room} />
++        <RoomCard {room} icons={lightsCompact} />
+       {/each}
+ 
+       <section class="card lights">
+         <div class="card-head">
+           <h2><Icon name="light" size={18} />{t('maison.accueil.lumieres')} <span class="count">{litCount ? t('maison.accueil.allumees', { count: litCount }) : t('maison.accueil.tout_eteint')}</span></h2>
+-          <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
++          <div class="head-actions">
++            <div class="look" role="radiogroup" aria-label={t('maison.pieces.affichage')}>
++              <button role="radio" aria-checked={!lightsCompact} class:active={!lightsCompact} onclick={() => setLightsCompact(false)} aria-label={t('maison.pieces.avec_noms')} title={t('maison.pieces.avec_noms')}>Aa</button>
++              <button role="radio" aria-checked={lightsCompact} class:active={lightsCompact} onclick={() => setLightsCompact(true)} aria-label={t('maison.pieces.icones')} title={t('maison.pieces.icones')}><Icon name="light" size={15} /></button>
++            </div>
++            <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
++          </div>
+         </div>
+         <div class="tiles">
+           {#each lights as l (l.id)}
+-            <LightTile id={l.id} name={l.name} icon={l.icon} also={l.also ?? []} />
++            <LightTile id={l.id} name={l.name} icon={l.icon} also={l.also ?? []} compact={lightsCompact} />
+           {/each}
+         </div>
+         {#if mood}
+@@ -221,7 +226,7 @@
+                 {/each}
+               </div>
+             </div>
+-            <AmbiancePicker lights={mood.lamps} label={mood.name} />
++            <AmbiancePicker lights={mood.lamps} label={mood.name} compact={lightsCompact} />
+           </div>
+         {/if}
+       </section>
+@@ -239,10 +244,8 @@
+     </div>
+ 
+     <div class="col">
+-      <HomeClock />
+       <PlanPreview />
+       <PoolCard />
+-      <EnergyCard />
+       <Routines />
+ 
+       {#if bell}
+@@ -255,27 +258,6 @@
+           <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
+         </section>
+       {/if}
+-
+-      <a class="card remote" href="#/salon">
+-        <span class="tv-object" aria-hidden="true">
+-          <span class="screen" class:lit={tvOn}></span>
+-          <span class="stand"></span>
+-        </span>
+-        <span class="remote-text">
+-          <strong>{t('maison.accueil.telecommande')}</strong>
+-          <span class="muted">{tvOn ? t('maison.accueil.tele_allumee') : t('maison.accueil.tele_veille')}{playing ? ` · ${t('maison.accueil.son_joue')}` : ''}</span>
+-        </span>
+-        <span class="go"><Icon name="arrow-top-right" size={20} /></span>
+-      </a>
+-
+-      <a class="card outside" href="#/dehors">
+-        <div class="card-head"><h2><Icon name="flower-outline" size={18} />{t('maison.accueil.dehors')}</h2><span class="more" aria-hidden="true"><Icon name="arrow-top-right" size={18} /></span></div>
+-        <div class="facts">
+-          <div><small>{t('maison.accueil.air')}</small><b>{aqiWord}</b></div>
+-          <div><small>UV</small><b class="num">{num(value(out.air, 'uv_index'), 0)}</b></div>
+-          <div><small>{t('maison.accueil.humidite')}</small><b class="num">{value(out.weather, 'humidity') != null ? `${num(value(out.weather, 'humidity'))} %` : '—'}</b></div>
+-        </div>
+-      </a>
+     </div>
+   </div>
+ </div>
+@@ -363,6 +345,41 @@
+     }
+   }
+ 
++  .head-actions {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    flex: none;
++  }
++
++  .look {
++    display: inline-flex;
++    padding: 3px;
++    border-radius: 999px;
++    background: var(--surface-2);
++  }
++
++  .look button {
++    display: grid;
++    place-items: center;
++    min-width: 34px;
++    height: 28px;
++    border: none;
++    border-radius: 999px;
++    background: transparent;
++    color: var(--ink-3);
++    font: inherit;
++    font-size: 13px;
++    font-weight: 700;
++    cursor: pointer;
++  }
++
++  .look button.active {
++    background: var(--surface);
++    color: var(--ink);
++    box-shadow: 0 1px 3px rgb(0 0 0 / 15%);
++  }
++
+   .moods {
+     grid-template-columns: minmax(0, 1fr);
+     margin-top: 18px;
+@@ -438,96 +455,6 @@
+     margin-top: 10px;
+   }
+ 
+-  .remote {
+-    display: grid;
+-    grid-template-columns: 1fr auto;
+-    gap: 14px;
+-    color: inherit;
+-    text-decoration: none;
+-    min-height: 168px;
+-    align-content: space-between;
+-    transition: transform 0.2s var(--ease);
+-  }
+-
+-  .remote:hover,
+-  .outside:hover {
+-    transform: translateY(-2px);
+-  }
+-
+-  .tv-object {
+-    grid-column: 1 / -1;
+-    display: grid;
+-    justify-items: center;
+-  }
+-
+-  .screen {
+-    width: 96px;
+-    height: 56px;
+-    border-radius: 8px;
+-    background: #171c28;
+-    box-shadow: inset 0 0 0 3px #2a3142;
+-    transition: background 0.4s;
+-  }
+-
+-  .screen.lit {
+-    background: linear-gradient(135deg, #5fb4f0, #8f8cf5 55%, #f0a53a);
+-    box-shadow: inset 0 0 0 3px #2a3142, 0 8px 26px -6px #8f8cf5aa;
+-  }
+-
+-  .stand {
+-    width: 30px;
+-    height: 6px;
+-    border-radius: 0 0 6px 6px;
+-    background: #2a3142;
+-  }
+-
+-  .remote-text {
+-    display: grid;
+-  }
+-
+-  .remote-text strong {
+-    font-size: 18px;
+-  }
+-
+-  .remote-text span {
+-    font-size: 13px;
+-  }
+-
+-  .go {
+-    align-self: end;
+-    width: 36px;
+-    height: 36px;
+-    border-radius: 50%;
+-    background: var(--surface-2);
+-    display: grid;
+-    place-items: center;
+-    color: var(--ink-2);
+-  }
+-
+-  .outside {
+-    color: inherit;
+-    text-decoration: none;
+-    transition: transform 0.2s var(--ease);
+-  }
+-
+-  .facts {
+-    display: grid;
+-    grid-template-columns: repeat(4, 1fr);
+-    gap: 8px;
+-  }
+-
+-  .facts small {
+-    display: block;
+-    font-size: 11px;
+-    color: var(--ink-3);
+-    font-weight: 650;
+-  }
+-
+-  .facts b {
+-    font-size: 17px;
+-    font-weight: 650;
+-  }
+-
+   @media (max-width: 760px) {
+     .tiles {
+       grid-template-columns: 1fr 1fr;
+diff --git a/web/src/maison/pages/Plan.svelte b/web/src/maison/pages/Plan.svelte
+index f0bbe1e..83edaf9 100644
+--- a/web/src/maison/pages/Plan.svelte
++++ b/web/src/maison/pages/Plan.svelte
+@@ -1,7 +1,7 @@
+ <script>
+   import { onMount } from 'svelte';
+   import Icon from '../ui/Icon.svelte';
+-  import { hub, value, nameOf, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered } from '../lib/home.svelte.js';
++  import { hub, value, nameOf, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered, canonicalId, pinIcon, pinReading } from '../lib/home.svelte.js';
+   import { asHuman, CANCELLED } from '../lib/auto.svelte.js';
+   import Drawing from '../plan/Drawing.svelte';
+   import House3D from '../plan/House3D.svelte';
+@@ -94,6 +94,18 @@
+     loaded = true;
+   }
+ 
++  // The hub's devices may arrive after the plan: heal a stale spelling
++  // once they are known (the id is kept otherwise).
++  $effect(() => {
++    if (!loaded) return;
++    for (const f of plan.floors ?? []) {
++      for (const s of f.devices ?? []) {
++        const id = canonicalId(s.id);
++        if (id !== s.id) s.id = id;
++      }
++    }
++  });
++
+   const shown = $derived(editing ? draft : plan);
+   const floor = $derived(shown?.floors.find((f) => f.id === floorId) ?? shown?.floors[0] ?? null);
+   const drawn = $derived((shown?.floors ?? []).some((f) => f.size));
+@@ -143,29 +155,6 @@
+ 
+   // ---- what a token shows -------------------------------------------------------
+ 
+-  const ICON = { light: 'light', group: 'light-group', plug: 'power', climate: 'air-conditioner', camera: 'cctv', speaker: 'speaker', tv: 'tv', cover: 'shutter' };
+-  const has = (d, key) => d.points.some((p) => p.key === key);
+-
+-  function iconOf(d) {
+-    const kind = deviceKind(d);
+-    if (ICON[kind]) return ICON[kind];
+-    if (has(d, 'smoke')) return 'fire';
+-    if (has(d, 'water_leak') || has(d, 'watersensor_state')) return 'water';
+-    if (has(d, 'contact') || has(d, 'doorcontact_state')) return 'door';
+-    if (has(d, 'occupancy') || has(d, 'motion') || has(d, 'pir')) return 'motion';
+-    if (has(d, 'temperature') || has(d, 'temp_current')) return 'thermometer';
+-    return 'info';
+-  }
+-
+-  /** A short reading next to the token (sensors). */
+-  function reading(d) {
+-    const t = value(d.id, 'temperature') ?? value(d.id, 'temp_current');
+-    if (typeof t === 'number' && deviceKind(d) !== 'climate' && !floor?.size) return `${num(t, 1)}°`;
+-    const p = value(d.id, 'power') ?? value(d.id, 'cur_power');
+-    if (typeof p === 'number' && p >= 1) return `${num(p)} W`;
+-    return null;
+-  }
+-
+   function alarming(d) {
+     return value(d.id, 'smoke') === true || leak(d.id);
+   }
+@@ -418,9 +407,9 @@
+     aria-label={lit(d) ? t('maison.plan.jeton_allume', { name: nameOf(d.id) }) : nameOf(d.id)}
+     title={nameOf(d.id)}
+   >
+-    <Icon name={iconOf(d)} size={18} />
++    <Icon name={pinIcon(d)} size={18} />
+   </button>
+-  {#if reading(d)}<span class="reading">{reading(d)}</span>{/if}
++  {#if pinReading(d, { drawn: !!floor?.size })}<span class="reading">{pinReading(d, { drawn: !!floor?.size })}</span>{/if}
+   <span class="name">{nameOf(d.id)}</span>
+   {#if editing}
+     <button class="unplace" onclick={(e) => { e.stopPropagation(); unplace(spot); }} aria-label={t('maison.plan.retirer_du_plan', { name: nameOf(d.id) })}><Icon name="close" size={12} /></button>
+@@ -574,7 +563,7 @@
+             {#each unplaced as d (d.id)}
+               <li>
+                 <button class:chosen={picking === d.id} onclick={() => (picking = picking === d.id ? null : d.id)}>
+-                  <Icon name={iconOf(d)} size={16} /><span>{nameOf(d.id)}</span>{#if roomOf(d)}<small>{roomOf(d)}</small>{/if}
++                  <Icon name={pinIcon(d)} size={16} /><span>{nameOf(d.id)}</span>{#if roomOf(d)}<small>{roomOf(d)}</small>{/if}
+                 </button>
+               </li>
+             {/each}
+diff --git a/web/src/maison/ui/AmbiancePicker.svelte b/web/src/maison/ui/AmbiancePicker.svelte
+index 8e62759..5918b6a 100644
+--- a/web/src/maison/ui/AmbiancePicker.svelte
++++ b/web/src/maison/ui/AmbiancePicker.svelte
+@@ -5,8 +5,9 @@
+   import Icon from './Icon.svelte';
+ 
+   /** A strip of ambiances for these lights (a room): one tap, the room
+-   *  takes the look. Lamps that cannot follow are left alone by Moli. */
+-  let { lights, label } = $props();
++   *  takes the look. Lamps that cannot follow are left alone by Moli.
++   *  `compact`: swatches alone (no names), to save room. */
++  let { lights, label, compact = false } = $props();
+ 
+   onMount(loadAmbiances);
+ 
+@@ -21,9 +22,9 @@
+   <div class="strip" role="group" aria-label={t('commun.ambiances', { label })}>
+     {#each looks.list as a (a.id)}
+       {@const busy = looks.busy === JSON.stringify({ ambiance: a.id })}
+-      <button class="look" class:busy onclick={() => setLook(lights, { ambiance: a.id }, t('commun.action', { label, action: a.name }))} disabled={looks.busy != null}>
++      <button class="look" class:busy class:compact onclick={() => setLook(lights, { ambiance: a.id }, t('commun.action', { label, action: a.name }))} disabled={looks.busy != null} title={compact ? a.name : null}>
+         <span class="swatch" class:pale={!a.colors.length} style:background={swatch(a)}><Icon name={a.icon} size={16} /></span>
+-        <span class="name">{a.name}</span>
++        {#if !compact}<span class="name">{a.name}</span>{/if}
+       </button>
+     {/each}
+   </div>
+@@ -102,6 +103,11 @@
+     color: var(--ink-2);
+   }
+ 
++  .look.compact {
++    width: auto;
++    padding: 6px;
++  }
++
+   .busy .swatch {
+     animation: pulse 0.9s ease-in-out infinite;
+   }
+diff --git a/web/src/maison/ui/HomeClock.svelte b/web/src/maison/ui/HomeClock.svelte
+deleted file mode 100644
+index 972a1df..0000000
+--- a/web/src/maison/ui/HomeClock.svelte
++++ /dev/null
+@@ -1,41 +0,0 @@
+-<script>
+-  import { home, clock, longDate, greeting } from '../lib/home.svelte.js';
+-  import { t } from '../../lib/i18n.svelte.js';
+-  import Icon from './Icon.svelte';
+-</script>
+-
+-<section class="card clock" aria-label={t('maison.accueil.horloge')}>
+-  <div class="time num">{clock(home.now)}</div>
+-  <div class="date">{longDate(home.now)}</div>
+-  <div class="hello"><Icon name="home" size={15} />{greeting(home.now)}</div>
+-</section>
+-
+-<style>
+-  .clock {
+-    display: grid;
+-    gap: 2px;
+-  }
+-
+-  .time {
+-    font-size: 44px;
+-    font-weight: 300;
+-    letter-spacing: -0.03em;
+-    line-height: 1;
+-  }
+-
+-  .date {
+-    font-size: 15px;
+-    font-weight: 650;
+-    color: var(--ink-2);
+-  }
+-
+-  .hello {
+-    display: inline-flex;
+-    align-items: center;
+-    gap: 6px;
+-    margin-top: 4px;
+-    font-size: 13px;
+-    font-weight: 600;
+-    color: var(--ink-3);
+-  }
+-</style>
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+index 5ca448c..493eeb4 100644
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -1,16 +1,23 @@
+ <script>
+   import { onMount } from 'svelte';
+   import { t } from '../../lib/i18n.svelte.js';
++  import { nameOf, deviceOf, pinIcon, pinReading } from '../lib/home.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+-  let image = $state(null);
++  let floor = $state(null);
++
++  const pins = $derived(
++    (floor?.devices ?? [])
++      .map((s) => ({ x: s.x, y: s.y, d: deviceOf(s.id) }))
++      .filter((p) => p.d),
++  );
+ 
+   onMount(async () => {
+     try {
+       const res = await fetch('/api/plan');
+       if (!res.ok) return;
+       const plan = await res.json();
+-      image = (plan.floors ?? []).find((f) => f.image)?.image ?? null;
++      floor = (plan.floors ?? []).find((f) => f.image) ?? null;
+     } catch {
+       /* the card shows its empty state */
+     }
+@@ -22,8 +29,18 @@
+     <h2><Icon name="home-roof" size={18} />{t('maison.accueil.plan')}</h2>
+     <span class="more" aria-hidden="true"><Icon name="arrow-top-right" size={18} /></span>
+   </div>
+-  {#if image}
+-    <div class="shot"><img src="/api/plan/images/{image}" alt="" loading="lazy" /></div>
++  {#if floor?.image}
++    <div class="shot">
++      <div class="frame">
++        <img src="/api/plan/images/{floor.image}" alt="" loading="lazy" />
++        {#each pins as p (p.d.id)}
++          <span class="pin" style="left:{p.x * 100}%; top:{p.y * 100}%" title={nameOf(p.d.id)}>
++            <span class="dot"><Icon name={pinIcon(p.d)} size={13} /></span>
++            {#if pinReading(p.d)}<span class="reading">{pinReading(p.d)}</span>{/if}
++          </span>
++        {/each}
++      </div>
++    </div>
+   {:else}
+     <p class="muted">{t('maison.accueil.plan_vide')}</p>
+   {/if}
+@@ -50,16 +67,56 @@
+   }
+ 
+   .shot {
++    display: grid;
++    place-items: center;
+     margin-top: 12px;
++  }
++
++  .frame {
++    position: relative;
++    display: inline-block;
++    max-width: 100%;
++    line-height: 0;
+     border-radius: var(--r-md);
+     background: var(--surface-2);
+     overflow: hidden;
+   }
+ 
+-  .shot img {
++  .frame img {
+     display: block;
+-    width: 100%;
++    max-width: 100%;
+     max-height: 240px;
+-    object-fit: contain;
++    width: auto;
++    height: auto;
++  }
++
++  .pin {
++    position: absolute;
++    display: grid;
++    justify-items: center;
++    transform: translate(-50%, -50%);
++    pointer-events: none;
++  }
++
++  .dot {
++    display: grid;
++    place-items: center;
++    width: 28px;
++    height: 28px;
++    border-radius: 50%;
++    background: var(--surface);
++    color: var(--ink-2);
++    box-shadow: var(--shadow-lift);
++  }
++
++  .reading {
++    margin-top: 2px;
++    padding: 1px 5px;
++    border-radius: 999px;
++    background: var(--surface);
++    color: var(--ink);
++    font-size: 10px;
++    font-weight: 700;
++    box-shadow: var(--shadow);
+   }
+ </style>

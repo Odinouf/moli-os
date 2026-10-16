@@ -56,8 +56,8 @@ Nouveaux commits le 2026-10-14 :
   (copier le patch sur le CT avant : `cat notes/patches/x.patch | ssh moli-os 'cat > /tmp/x.patch'`).
 
   **Ordre des patches Accueil** (chacun part de l'état du précédent) :
-  `accueil-ha-inspire` → `accueil-clim-conditional` → `accueil-sections`.
-  Voir `notes/accueil-sections.md` (ordre + supersession documentés).
+  `accueil-ha-inspire` → `accueil-clim-conditional` → `accueil-sections` → `accueil-tidy`.
+  Voir `notes/accueil-sections.md` et `notes/accueil-tidy.md` (ordre + supersession documentés).
 - Pas d'édition de code Moli ici (voir `AGENTS.md` du repo source pour ça).
 
 ## Règles
