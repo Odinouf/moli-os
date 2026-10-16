@@ -1,0 +1,20 @@
+diff --git a/web/src/maison/pages/Dehors.svelte b/web/src/maison/pages/Dehors.svelte
+index b7a5540..6ae3981 100644
+--- a/web/src/maison/pages/Dehors.svelte
++++ b/web/src/maison/pages/Dehors.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { home, value, num, isOn, reachable } from '../lib/home.svelte.js';
++  import { home, value, num, isOn, reachable, device, powerKey } from '../lib/home.svelte.js';
+   import { weatherOf } from '../lib/icons.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from '../ui/Icon.svelte';
+@@ -46,7 +46,7 @@
+     orp == null ? null : orp < 650 ? t('maison.dehors.orp_faible') : orp > 800 ? t('maison.dehors.orp_forte') : t('maison.dehors.orp_saine'),
+   );
+   const pumpId = $derived(out.pool_pump);
+-  const pumpKnown = $derived(pumpId && reachable(pumpId) && v(pumpId, 'switch_1') != null);
++  const pumpKnown = $derived(pumpId && reachable(pumpId) && powerKey(device(pumpId)) != null);
+ 
+   const outsideCams = $derived((home.config?.favorites?.cameras ?? []).filter((c) => !/sonnette|doorbell/i.test(c.name)));
+ 
