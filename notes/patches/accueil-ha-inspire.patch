@@ -1,0 +1,540 @@
+diff --git a/crates/moli-weather/src/lib.rs b/crates/moli-weather/src/lib.rs
+index 1d9358d..aef2d81 100644
+--- a/crates/moli-weather/src/lib.rs
++++ b/crates/moli-weather/src/lib.rs
+@@ -311,7 +311,7 @@ async fn fetch_forecast(latitude: f64, longitude: f64) -> anyhow::Result<Json> {
+          cloud_cover,wind_speed_10m,is_day\
+          &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,\
+          precipitation_probability_max,wind_speed_10m_max,sunrise,sunset\
+-         &forecast_hours=25&forecast_days=7&timezone=auto"
++         &forecast_hours=25&forecast_days=8&timezone=auto"
+     );
+     let w = get_json(&path, MAX_FORECAST).await?;
+     anyhow::ensure!(w["hourly"]["time"].is_array(), "open-meteo: no hours");
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index ac161eb..704bb00 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -55,6 +55,15 @@
+   "maison.accueil.humidite": "Humidité",
+   "maison.accueil.piscine": "Piscine",
+ 
++  "maison.accueil.pieces_titre": "Pièces",
++  "maison.accueil.sans_mesure": "pas de mesure",
++  "maison.accueil.semaine": "La semaine",
++  "maison.accueil.chauffage": "Consigne chauffage",
++  "maison.accueil.chauffage_ambiance": "{temp}° dans la pièce",
++  "maison.accueil.chauffage_confort": "Confort",
++  "maison.accueil.chauffage_reduit": "Réduit",
++  "maison.accueil.chauffage_arret": "Arrêt",
++
+   "maison.air.tres_bon": "Très bon",
+   "maison.air.bon": "Bon",
+   "maison.air.moyen": "Moyen",
+@@ -191,7 +200,7 @@
+ 
+   "maison.meteo.previsions": "Prévisions",
+   "maison.meteo.heures": "Heures",
+-  "maison.meteo.jours": "7 jours",
++  "maison.meteo.jours": "8 jours",
+   "maison.meteo.maintenant": "Maint.",
+   "maison.meteo.heure": "{h} h",
+   "maison.meteo.aujourdhui": "Auj.",
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index f3b1a7a..53d2a6f 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -11,6 +11,9 @@
+   import AmbiancePicker from '../ui/AmbiancePicker.svelte';
+   import Routines from '../ui/Routines.svelte';
+   import SkyHero from '../ui/SkyHero.svelte';
++  import HeatingBar from '../ui/HeatingBar.svelte';
++  import WeekWeather from '../ui/WeekWeather.svelte';
++  import RoomStrip from '../ui/RoomStrip.svelte';
+ 
+   const cfg = $derived(home.config ?? {});
+   const out = $derived(cfg.outdoor ?? {});
+@@ -174,6 +177,10 @@
+     {/each}
+   </section>
+ 
++  <RoomStrip />
++
++  <HeatingBar />
++
+   <div class="grid">
+     <section class="card lights">
+       <div class="card-head">
+@@ -203,16 +210,19 @@
+     <div class="side">
+       <EnergyCard />
+       <Routines />
++      <WeekWeather />
+     </div>
+ 
+-    <section class="card climate">
+-      <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
+-      <div class="clims">
+-        {#each cfg.favorites?.climate ?? [] as c (c.id)}
+-          <ClimateCard id={c.id} name={c.name} />
+-        {/each}
+-      </div>
+-    </section>
++    {#if (cfg.favorites?.climate ?? []).length}
++      <section class="card climate">
++        <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
++        <div class="clims">
++          {#each cfg.favorites?.climate ?? [] as c (c.id)}
++            <ClimateCard id={c.id} name={c.name} />
++          {/each}
++        </div>
++      </section>
++    {/if}
+ 
+     {#if bell}
+       <section class="card doorbell">
+diff --git a/web/src/maison/ui/HeatingBar.svelte b/web/src/maison/ui/HeatingBar.svelte
+new file mode 100644
+index 0000000..7723e71
+--- /dev/null
++++ b/web/src/maison/ui/HeatingBar.svelte
+@@ -0,0 +1,131 @@
++<script>
++  // « Consigne chauffage » : one tap, three states, like the buttons on the
++  // Home Assistant tablet. The valve (a SONOFF TRVZB) takes a mode and a
++  // setpoint; the lit button is read back from the valve itself, so the bar
++  // tells the truth even when the valve was changed by hand.
++  import { home, value, act, pending } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  const heat = $derived(home.config?.heating ?? null);
++  const id = $derived(heat?.valve ?? null);
++  const confort = $derived(Number(heat?.confort ?? 18.5));
++  const reduit = $derived(Number(heat?.reduit ?? 16));
++
++  const mode = $derived(id ? value(id, 'system_mode') : null);
++  const setpoint = $derived(id ? value(id, 'occupied_heating_setpoint') : null);
++  const local = $derived(id ? value(id, 'local_temperature') : null);
++  const busy = $derived(id ? (pending(id, 'system_mode') || pending(id, 'occupied_heating_setpoint')) : false);
++
++  const near = (a, b) => a != null && Number.isFinite(Number(a)) && Math.abs(Number(a) - Number(b)) < 0.75;
++  /** Which button is lit: read off the valve, never guessed. */
++  const current = $derived(
++    !id
++      ? null
++      : mode === 'off'
++        ? 'arret'
++        : near(setpoint, reduit)
++          ? 'reduit'
++          : near(setpoint, confort)
++            ? 'confort'
++            : null,
++  );
++
++  function choose(choice) {
++    if (!id) return;
++    if (choice === 'arret') {
++      act(`${id}/system_mode`, 'off', t('maison.accueil.chauffage_arret'));
++      return;
++    }
++    const target = choice === 'confort' ? confort : reduit;
++    act(`${id}/system_mode`, 'heat', t(`maison.accueil.chauffage_${choice}`));
++    act(`${id}/occupied_heating_setpoint`, target, t(`maison.accueil.chauffage_${choice}`));
++  }
++</script>
++
++{#if id}
++  <section class="card heating" aria-label={t('maison.accueil.chauffage')}>
++    <div class="head">
++      <h2><Icon name="fire" size={18} />{t('maison.accueil.chauffage')}</h2>
++      {#if local != null}
++        <span class="now num">{t('maison.accueil.chauffage_ambiance', { temp: Math.round(Number(local)) })}</span>
++      {/if}
++    </div>
++    <div class="buttons" role="radiogroup" aria-label={t('maison.accueil.chauffage')}>
++      <button role="radio" aria-checked={current === 'confort'} class:on={current === 'confort'} disabled={busy} onclick={() => choose('confort')}>
++        <Icon name="fire" size={16} />{t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
++      </button>
++      <button role="radio" aria-checked={current === 'reduit'} class:on={current === 'reduit'} disabled={busy} onclick={() => choose('reduit')}>
++        <Icon name="moon" size={16} />{t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
++      </button>
++      <button role="radio" aria-checked={current === 'arret'} class:on={current === 'arret'} disabled={busy} onclick={() => choose('arret')}>
++        <Icon name="power" size={16} />{t('maison.accueil.chauffage_arret')}
++      </button>
++    </div>
++  </section>
++{/if}
++
++<style>
++  .heating {
++    display: grid;
++    gap: 12px;
++  }
++
++  .head {
++    display: flex;
++    align-items: baseline;
++    justify-content: space-between;
++    gap: 10px;
++  }
++
++  .head h2 {
++    display: inline-flex;
++    align-items: center;
++    gap: 8px;
++    font-size: 16px;
++    font-weight: 700;
++  }
++
++  .now {
++    font-size: 13px;
++    font-weight: 600;
++    color: var(--ink-3);
++  }
++
++  .buttons {
++    display: flex;
++    gap: 8px;
++    flex-wrap: wrap;
++  }
++
++  .buttons button {
++    display: inline-flex;
++    align-items: center;
++    gap: 7px;
++    border: 0;
++    border-radius: 999px;
++    padding: 9px 15px;
++    font: inherit;
++    font-size: 14px;
++    font-weight: 650;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    cursor: pointer;
++    transition: background 0.2s var(--ease), color 0.2s var(--ease);
++  }
++
++  .buttons button small {
++    font-weight: 600;
++    opacity: 0.75;
++  }
++
++  .buttons button.on {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .buttons button:disabled {
++    opacity: 0.55;
++    cursor: default;
++  }
++</style>
+diff --git a/web/src/maison/ui/RoomStrip.svelte b/web/src/maison/ui/RoomStrip.svelte
+new file mode 100644
+index 0000000..a454bd8
+--- /dev/null
++++ b/web/src/maison/ui/RoomStrip.svelte
+@@ -0,0 +1,159 @@
++<script>
++  // The rooms at a glance: one pastille a room with the temperature and, when
++  // a sensor knows it, the humidity. The colour follows the temperature
++  // (cold blue → hot red), so the page reads at arm's length. A tap opens
++  // the room's page with all its lights.
++  import { home, roomList, value, num } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  /** The layout's rooms, in its order, with the readings from their sensors. */
++  const rooms = $derived.by(() => {
++    const byName = new Map(roomList().map((r) => [r.name, r]));
++    const defs = (home.config?.rooms ?? []).length ? home.config.rooms : [...byName.keys()].map((name) => ({ name }));
++    return defs
++      .map((def) => {
++        const room = byName.get(def.name);
++        const list = room ? [...room.sensors, ...room.climates] : [];
++        const online = list.filter((d) => d.online !== false);
++        const temps = online.map((d) => value(d.id, 'temperature') ?? value(d.id, 'temp_current') ?? value(d.id, 'local_temperature')).filter((x) => typeof x === 'number');
++        const hums = online.map((d) => value(d.id, 'humidity') ?? value(d.id, 'humidity_value')).filter((x) => typeof x === 'number');
++        const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
++        return { name: def.name, icon: def.icon ?? 'home', temp: avg(temps), humidity: avg(hums) };
++      })
++      .filter((r) => r.temp != null || r.humidity != null || byName.has(r.name));
++  });
++
++  const tone = (deg) => (deg == null ? '' : deg < 18 ? 'cold' : deg < 20 ? 'cool' : deg <= 24 ? 'good' : deg <= 27 ? 'warm' : 'hot');
++</script>
++
++{#if rooms.length}
++  <section class="card rooms" aria-label={t('maison.accueil.pieces_titre')}>
++    <div class="card-head">
++      <h2><Icon name="home" size={18} />{t('maison.accueil.pieces_titre')}</h2>
++      <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
++    </div>
++    <div class="strip">
++      {#each rooms as r (r.name)}
++        <a class="pastille {tone(r.temp)}" href="#/pieces" title={r.name}>
++          <span class="room-ico"><Icon name={r.icon} size={18} /></span>
++          <span class="words">
++            <b>{r.name}</b>
++            <span class="readings">
++              {#if r.temp != null}<span class="t num">{num(r.temp, 1)}°</span>{/if}
++              {#if r.humidity != null}<span class="h num"><Icon name="humidity" size={12} />{num(r.humidity, 0)}%</span>{/if}
++              {#if r.temp == null && r.humidity == null}<span class="h">{t('maison.accueil.sans_mesure')}</span>{/if}
++            </span>
++          </span>
++        </a>
++      {/each}
++    </div>
++  </section>
++{/if}
++
++<style>
++  .rooms {
++    display: grid;
++    gap: 12px;
++  }
++
++  .card-head {
++    display: flex;
++    align-items: center;
++    justify-content: space-between;
++  }
++
++  .card-head h2 {
++    display: inline-flex;
++    align-items: center;
++    gap: 8px;
++    font-size: 16px;
++    font-weight: 700;
++  }
++
++  .strip {
++    display: flex;
++    gap: 10px;
++    overflow-x: auto;
++    scrollbar-width: thin;
++    padding-bottom: 4px;
++  }
++
++  .pastille {
++    flex: 0 0 auto;
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    min-width: 150px;
++    padding: 10px 12px;
++    border-radius: 16px;
++    background: var(--surface-2);
++    color: inherit;
++    text-decoration: none;
++  }
++
++  .room-ico {
++    flex: none;
++    display: grid;
++    place-items: center;
++    width: 34px;
++    height: 34px;
++    border-radius: 11px;
++    background: var(--surface);
++    color: var(--ink-3);
++  }
++
++  .words {
++    display: grid;
++    gap: 2px;
++    min-width: 0;
++  }
++
++  .words b {
++    font-size: 14px;
++    font-weight: 700;
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
++  }
++
++  .readings {
++    display: inline-flex;
++    align-items: baseline;
++    gap: 8px;
++  }
++
++  .readings .t {
++    font-size: 16px;
++    font-weight: 750;
++  }
++
++  .readings .h {
++    display: inline-flex;
++    align-items: center;
++    gap: 3px;
++    font-size: 12px;
++    font-weight: 600;
++    color: var(--ink-3);
++  }
++
++  .cold .readings .t {
++    color: #3b7bea;
++  }
++
++  .cool .readings .t {
++    color: #2aa5bd;
++  }
++
++  .good .readings .t {
++    color: #2f9e55;
++  }
++
++  .warm .readings .t {
++    color: #e08a00;
++  }
++
++  .hot .readings .t {
++    color: #e5482b;
++  }
++</style>
+diff --git a/web/src/maison/ui/WeekWeather.svelte b/web/src/maison/ui/WeekWeather.svelte
+new file mode 100644
+index 0000000..fb0ae14
+--- /dev/null
++++ b/web/src/maison/ui/WeekWeather.svelte
+@@ -0,0 +1,137 @@
++<script>
++  // The week at a glance, on the home page: one line a day, the temperature
++  // range as a bar that slides (cold on the left, warm on the right), the sky
++  // and the chance of rain. The whole week fits without opening anything.
++  import { onMount } from 'svelte';
++  import { sky, watchSky, days, dayName } from '../lib/sky.svelte.js';
++  import { weatherOf } from '../lib/icons.js';
++  import { num } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  let { daysShow = 8 } = $props();
++
++  onMount(() => watchSky());
++
++  const week = $derived(days(sky.forecast).slice(0, daysShow));
++  const lo = $derived(Math.min(...week.map((d) => d.min).filter(Number.isFinite)));
++  const hi = $derived(Math.max(...week.map((d) => d.max).filter(Number.isFinite)));
++  const span = $derived(Math.max(1, hi - lo));
++</script>
++
++{#if week.length}
++  <section class="card week" aria-label={t('maison.accueil.semaine')}>
++    <div class="card-head">
++      <h2><Icon name="sun" size={18} />{t('maison.accueil.semaine')}</h2>
++    </div>
++    <ol class="rows">
++      {#each week as d, i (d.date)}
++        {@const s = weatherOf(d.code, true)}
++        <li>
++          <small class="dow">{dayName(d.date, i)}</small>
++          <span class="ico" title={s.label}><Icon path={s.icon} size={22} /></span>
++          <span class="min num">{num(d.min, 0)}°</span>
++          <i class="bar" aria-hidden="true">
++            <i style="left:{((d.min - lo) / span) * 100}%; right:{((hi - d.max) / span) * 100}%"></i>
++          </i>
++          <span class="max num">{num(d.max, 0)}°</span>
++          <em class="num rain" class:dry={d.rain < 20}>{d.rain}%</em>
++        </li>
++      {/each}
++    </ol>
++  </section>
++{/if}
++
++<style>
++  .week {
++    display: grid;
++    gap: 10px;
++  }
++
++  .card-head h2 {
++    display: inline-flex;
++    align-items: center;
++    gap: 8px;
++    font-size: 16px;
++    font-weight: 700;
++  }
++
++  .rows {
++    list-style: none;
++    margin: 0;
++    padding: 0;
++    display: grid;
++    gap: 2px;
++  }
++
++  .rows li {
++    display: grid;
++    grid-template-columns: 42px 30px 40px minmax(60px, 1fr) 40px 44px;
++    align-items: center;
++    gap: 10px;
++    padding: 5px 6px;
++    border-radius: 12px;
++  }
++
++  .rows li:first-child {
++    background: var(--surface-2);
++  }
++
++  .dow {
++    font-size: 13px;
++    font-weight: 650;
++    color: var(--ink-2);
++  }
++
++  .ico {
++    display: grid;
++    place-items: center;
++    color: var(--ink-2);
++  }
++
++  .min {
++    text-align: right;
++    font-size: 13px;
++    color: var(--ink-3);
++  }
++
++  .max {
++    text-align: right;
++    font-size: 14px;
++    font-weight: 700;
++  }
++
++  .bar {
++    position: relative;
++    height: 5px;
++    border-radius: 3px;
++    background: var(--surface-3);
++  }
++
++  .bar i {
++    position: absolute;
++    top: 0;
++    bottom: 0;
++    border-radius: 3px;
++    background: linear-gradient(90deg, #6cb6f5, #f5a742);
++  }
++
++  .rain {
++    text-align: right;
++    font-style: normal;
++    font-size: 12px;
++    font-weight: 700;
++    color: var(--cool);
++  }
++
++  .rain.dry {
++    visibility: hidden;
++  }
++
++  @media (max-width: 760px) {
++    .rows li {
++      grid-template-columns: 38px 26px 34px minmax(40px, 1fr) 34px 40px;
++      gap: 7px;
++    }
++  }
++</style>

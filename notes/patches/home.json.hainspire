@@ -1,0 +1,22 @@
+{
+  "title": "Maison",
+  "rooms": [
+    { "name": "Salon" },
+    { "name": "VMC + SDB", "aliases": ["SDB", "VMC"] },
+    { "name": "Alicia" },
+    { "name": "Parents" },
+    { "name": "Appartement", "aliases": ["Apartement"] },
+    { "name": "Cave à Vins", "aliases": ["Cave"] }
+  ],
+  "heating": { "valve": "z2m:0x286847fffe96a2cd", "confort": 18.5, "reduit": 16 },
+  "favorites": {
+    "cameras": [{ "id": "frigate:atelier", "name": "Atelier", "refresh": 10 }]
+  },
+  "outdoor": {
+    "weather": "meteo:api.open-meteo.com:443",
+    "air": "air:air-quality-api.open-meteo.com:443",
+    "pool": "z2m:0xa4c138062423ffff",
+    "pool_pump": "z2m:0xa4c138bb3c3e1f88",
+    "garden_lights": [{ "id": "z2m:0xe0798dfffec9ae8f", "name": "Spot extérieur" }]
+  }
+}

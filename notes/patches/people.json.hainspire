@@ -1,0 +1,24 @@
+{
+  "people": [
+    {
+      "id": "fabienne",
+      "name": "Fabienne",
+      "role": "member",
+      "emails": [],
+      "rooms": [],
+      "macs": [],
+      "created": 1792156918672
+    },
+    {
+      "id": "pat",
+      "name": "Pat",
+      "role": "member",
+      "emails": [],
+      "rooms": [],
+      "macs": [],
+      "created": 1792156918672
+    }
+  ],
+  "zones": [],
+  "invites": []
+}

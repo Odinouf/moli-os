@@ -37,7 +37,27 @@ Nouveaux commits le 2026-10-14 :
 
 ## Contenu attendu du projet
 - `README.md` (ce document).
-- `notes/` : relevés de version, diffs de `integrations/`, suivis de déploiement LXC 125.
+- `notes/` : notes opérationnelles et relevés — version tracking, diffs de
+  `integrations/`, déploiements LXC 125, migrations (Hue, zwave, tuya, frigate),
+  refontes du dashboard (`accueil-*`, `dashboard-clim`, `dehors`, `fuseaux-horaires`,
+  `tablette-lenovo-moli`), audits (`security-audit`, `energy-crosscheck`).
+- `notes/patches/` : patches du **fork local** du dashboard Moli (édits ponctuels à
+  ré-appliquer après chaque resync/mise à jour du dépôt source, et à remonter en **PR amont**
+  `github.com/rudy-io/moli-os`). Contient aussi des **échantillons de config** (`.hainspire`)
+  exportés pour traçabilité — ce ne sont *pas* des patches `git apply`. Ces échantillons
+  **figent l'étape `accueil-ha-inspire`** (pièces, chauffage, caméra, piscine) ; les
+  changements ultérieurs (`badges` d'`accueil-sections` p.ex.) ne s'y trouvent **pas** —
+  se référer aux `.patch` pour l'état final. Pour (ré)appliquer un patch sur le CT125 :
+  ```sh
+  ssh moli-os 'cd /opt/moli-os && git apply --check <patch>'   # vérifie d'abord
+  ssh moli-os 'cd /opt/moli-os && git apply <patch>'           # puis applique
+  ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d'  # le web est embarqué (rust-embed)
+  ```
+  (copier le patch sur le CT avant : `cat notes/patches/x.patch | ssh moli-os 'cat > /tmp/x.patch'`).
+
+  **Ordre des patches Accueil** (chacun part de l'état du précédent) :
+  `accueil-ha-inspire` → `accueil-clim-conditional` → `accueil-sections`.
+  Voir `notes/accueil-sections.md` (ordre + supersession documentés).
 - Pas d'édition de code Moli ici (voir `AGENTS.md` du repo source pour ça).
 
 ## Règles

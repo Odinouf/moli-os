@@ -1,0 +1,95 @@
+["hue:75aa8f52-5c83-4f24-b25d-9c01b4d7fcd2"]
+room = "Salon"
+
+["hue:b8aeaaa7-16f9-489c-bed4-938275117793"]
+room = "Salon"
+
+["hue:bbff3f1e-f5a3-4dce-aeb3-e29f7c092960"]
+room = "Salon"
+
+["hue:bc07bfaf-ece9-40eb-aff6-32659a7c378e"]
+room = "Salon"
+
+["hue:d38f0e2b-80f1-455e-881a-be3d0aa80c6c"]
+room = "Salon"
+
+["hue:d6d1971c-b47a-4ecd-8bf2-8ead4c70a59e"]
+room = "Alicia"
+
+["hue:e506ed5c-1f57-4d92-89f1-b56cf726cae5"]
+room = "Salon"
+
+["hue:e9cef3e4-4dcf-4cbd-9e83-cff4ec7b79a6"]
+room = "Entree"
+
+["hue:ee2f8325-b53d-48b2-8851-fe3cbaccef79"]
+room = "Salon"
+
+["z2m:0x00158d00026ecbce"]
+room = "Apartement"
+
+["z2m:0x00158d000272593c"]
+room = "Cuisine"
+
+["z2m:0x00158d00044a53c2"]
+room = "Alicia"
+
+["z2m:0x00158d000949bbf5"]
+room = "Entree"
+
+["z2m:0x001788011033bb32"]
+room = "Salon"
+
+["z2m:0x84ba20fffe998111"]
+room = "Salon"
+
+["z2m:0xa4c13818d6898fb7"]
+room = "Piscine"
+
+["z2m:0xa4c138287ee9c869"]
+room = "Salon"
+
+["z2m:0xa4c13828ef638d36"]
+room = "Grenier"
+
+["z2m:0xa4c13842b692dcc9"]
+room = "Atelier"
+
+["z2m:0xa4c1386f28530d52"]
+room = "SDB"
+
+["z2m:0xa4c138a07a1d1df2"]
+room = "Salon"
+
+["z2m:0xa4c138b252971b97"]
+room = "Chaufferie"
+
+["z2m:0xa4c138bb3c3e1f88"]
+room = "Cuisine"
+
+["z2m:0xa4c138c1932e41db"]
+room = "Chaufferie"
+
+["z2m:0xa4c138d04532f541"]
+room = "Cuisine"
+
+["z2m:0xe0798dfffec9ae8f"]
+room = "Entree"
+
+["hue:27cc7345-444e-4bfb-86e2-184fdf6e6675"]
+room = "Salon"
+
+["hue:6a3105f8-7d47-43d7-a6e8-63ec6f26012c"]
+room = "Parents"
+
+["z2m:0x00158d0002775db9"]
+room = "Dressing"
+
+["z2m:0x00158d000449d3f1"]
+room = "Piscine"
+
+["z2m:0x00158d0002779ad7"]
+room = "VMC + SDB"
+
+["hue:8fc554e0-85ec-4d58-b403-4b6a3a4f6122"]
+room = "Cave à Vins"

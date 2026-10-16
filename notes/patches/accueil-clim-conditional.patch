@@ -1,0 +1,29 @@
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index f3b1a7a..0867886 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -205,14 +205,16 @@
+       <Routines />
+     </div>
+ 
+-    <section class="card climate">
+-      <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
+-      <div class="clims">
+-        {#each cfg.favorites?.climate ?? [] as c (c.id)}
+-          <ClimateCard id={c.id} name={c.name} />
+-        {/each}
+-      </div>
+-    </section>
++    {#if (cfg.favorites?.climate ?? []).length}
++      <section class="card climate">
++        <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
++        <div class="clims">
++          {#each cfg.favorites?.climate ?? [] as c (c.id)}
++            <ClimateCard id={c.id} name={c.name} />
++          {/each}
++        </div>
++      </section>
++    {/if}
+ 
+     {#if bell}
+       <section class="card doorbell">
