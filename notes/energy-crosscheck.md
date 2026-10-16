@@ -1,9 +1,10 @@
 # Croisement dashboard énergie HA ↔ Moli OS
 
-**Portée : lecture seule.** Aucune écriture côté HA ni Moli. Moli n'a pas de `[energy]`
-configuré (option de config laissée de côté), donc `/api/energy` renvoie `404` : on compare
-les **mesures brutes par appareil** exposées par le pilote z2m de Moli
-(`/api/devices` et page Atelier) avec le dashboard Énergie de HA.
+**Portée initiale : lecture seule** (cross-check). Une **configuration `[energy]` de Moli**
+a ensuite été ajoutée (portée b, config seule) pour que la page Énergie rende — voir la
+section dédiée plus bas. Aucune écriture côté HA : lecture des états via API REST.
+Moli expose les **mesures brutes par appareil** (`/api/devices`, page Atelier) et sa page
+Énergie (`#/energie`, `/api/energy`).
 
 ## Méthode
 
@@ -50,13 +51,36 @@ identique à HA.
 - **`0xa4c13861bf3c8f14` « Prise pompe eau piscine »** : présent dans le registre HA mais
   **sans entité énergie** et absent du parc z2m vu par Moli → appareil orphelin/retiré.
   Non comparable.
-- **`[energy]` non configurée dans Moli** : `/api/energy` et la page `#/energie` renvoient
-  `404` (aucun compteur déclaré). C'est attendu : c'est précisément ce qu'ajouterait une
-  phase ultérieure de configuration (`[[energy.meter]]` + tarif Tempo + `[energy.live]`).
+- **`[energy]` — désormais configurée** : la page `#/energie` et `/api/energy` rendent le
+  total maison + les appareils (voir section « Configuration `[energy]` »).
+
+## Configuration `[energy]` de Moli (portée b, config seule)
+
+Après le cross-check (portée a), `[energy]` a été configurée dans `data/moli.toml` (CT125)
+pour que la page Énergie rende :
+
+- **1 compteur `total`** : « Maison » sur la pince *Tore Apartment*
+  (`z2m:0xd878f0fffeaff727/energy`, `power` associé). C'est la maison entière (choix humain).
+- **7 compteurs `appliance`** en miroir du `device_consumption` HA (parc z2m) : Tondeuse,
+  Chaudière, Frigos, Pompe Piscine, Imprimante 3D, PC, VMC — chacun `point = .../energy`,
+  `power = .../power`.
+
+**Pas de tarif ni de jauge « en direct »** : le tarif périodique exige un point PTEC
+(Linky) et la jauge fournisseur un point PAPP — aucun des deux n'est dans zigbee2mqtt (le
+Tempo HA vient d'un publisher MQTT distinct, le fournisseur = Deye, hors z2m). Prix/kWh et
+abonnement donc absents : Moli compte les **kWh**, pas les euros.
+
+**Sauvegarde** : `data/moli.toml.bak-preenergy`. **Réversible** : retirer les blocs
+`[energy]`/`[[energy.meter]]` et supprimer `data/energy.db`.
+
+**Démarrage à froid** : le comptage par heure commence à la configuration (pas d'import de
+l'historique HA, portée config seule). Les kWh du jour/de l'heure se remplissent au fil de
+l'eau ; la puissance live est immédiate.
 
 ## Conclusion
 
 Les mesures par prise que Moli restitue depuis le parc Zigbee2MQTT sont **exactement
-alignées** avec le dashboard énergie HA pour tout le parc z2m commun. Les seuls points hors
+alignées** avec le dashboard énergie HA pour tout le parc z2m commun, et Moli affiche
+désormais sa propre page Énergie (total maison + appareils). Les seuls points hors
 périmètre sont non-Zigbee (Z-Wave, onduleur Deye/solaire) et relèvent d'intégrations que
 Moli n'a pas (encore).
