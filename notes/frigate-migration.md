@@ -1,9 +1,8 @@
 # Migration Frigate → Moli OS
 
 **Date :** 2026-10-16 · **Portée :** intégration du NVR Frigate dans Moli (lecture seule + images)
-**Statut :** faite et vérifiée (F1–F9) **sauf la purge des caméras fantômes** (cf. « Constat à traiter »
-en fin de document : 11 appareils retenus polluent encore la liste). L'intégration fonctionne ; l'hygiène
-du broker reste à faire.
+**Statut :** faite et vérifiée (F1–F9). **Purge des caméras fantômes effectuée** (P1–P7 ci-dessous) :
+le broker ne porte plus que les 2 vraies caméras, Moli n'expose plus que 3 appareils `frigate:`.
 
 ## Contexte
 
@@ -137,34 +136,53 @@ Le présent document (`notes/frigate-migration.md`).
   deux pilotes à la fois. Nommer la variable pour le broker (pas pour z2m) éviterait cette
   confusion ; à faire si un troisième consommateur MQTT apparaît.
 
-## Constat à traiter (hors critères) — caméras fantômes
+## Purge des caméras fantômes (P1–P7) — faite et vérifiée
 
-`frigate` expose **14 appareils** : les 2 vraies caméras (`atelier`, `piscine`) + le serveur,
-mais aussi **11 caméras fantômes** issues de **topics MQTT retenus** d'anciennes configs Frigate :
+`frigate` exposait **14 appareils** : les 2 vraies caméras (`atelier`, `piscine`) + le serveur,
+plus **11 caméras fantômes** issues de **topics MQTT retenus** d'anciennes configs Frigate :
 
 `Atelier`, `ESP32`, `Entree`, `Entree_sub`, `Grange`, `Jardin`, `Porte_Entree`, `Webcam`,
 `name_of_your_camera`, `reolink`, `rstp_test`.
 
-Cause : ces `frigate/<nom>/...` sont **retained** sur le broker ; le driver les découvre comme des
-caméras (élément `motion`/`detect`). Vérifié par souscription `frigate/#`.
+Cause : ces `frigate/<nom>/...` étaient **retained** sur le broker ; le driver les découvrait comme
+des caméras dès la redélivrance d'un `frigate/<nom>/detect/state` ou `/motion` (`names_a_camera`).
 
-**Nettoyage proposé (à valider, non fait) :** publier un payload vide retenu sur les topics
-`frigate/<fantôme>/#` pour les purger, puis redémarrer le driver frigate. Action **modifiant
-l'état du broker** → à faire sur accord explicite.
+### P1 — Sauvegarde
+`data/state.json` copié en `data/state.json.bak-prefrigate-purge-20261016-122230` (CT125).
 
-- **Propriétaire :** opérateur Moli (accord humain requis avant toute écriture MQTT).
-- **Échéance suggérée :** à planifier — prochaine passe de nettoyage (avant de considérer
-  l'intégration Frigate « propre »). Tant que ce n'est pas fait, la liste des appareils Moli reste
-  polluée.
-- **Contournement en attendant (côté utilisateur) :** les fantômes n'ont ni image (les topics
-  `latest.jpg` n'existent plus → `502`) ni état vivant ; ils sont donc ignorables au quotidien. Pour
-  les masquer, ne pas les importer/assigner dans le dashboard (aucun libellé ni pièce). À défaut,
-  la purge (ci-dessus) est la seule correction durable.
-- **Alternative non retenue :** filtrer côté driver par liste blanche de caméras — cela
-  **divergerait le code amont** `moli-frigate` et masquerait d'éventuelles vraies caméras ajoutées
-  plus tard. Préférer l'hygiène du broker.
+### P2 — Écriture MQTT (accord humain obtenu)
+Payload **vide + retained** publié sur les **153 topics** des 11 sous-arbres fantômes
+(QoS 1). Garde-fou en script : refus catégorique de toucher `frigate/{atelier,piscine}/`,
+`/available`, `/stats`, `/profile`. Aucune écriture sur les 2 vraies caméras.
 
-## Rollback
+### P3 — Preuve broker
+Re-souscription `frigate/#` (retained only) → racines présentes :
+`atelier`, `piscine`, `available`, `profile`. **Fantômes : 0.** `atelier` + `piscine` toujours là.
+
+### P4 — Redémarrage
+`docker compose restart` dans `/opt/moli-os` (config relue au démarrage) → `frigate` `running`.
+
+### P5 — Preuve Moli
+`GET /api/devices` → **3** appareils `frigate:` : `frigate:atelier`, `frigate:frigate-server`,
+`frigate:piscine`. Les 11 fantômes ont disparu.
+
+### P6 — Non-régression
+Pilotes `running` : `air`, `bambu-a1`, `bambu-a1mini`, `energie`, `frigate`, `hue`, `meteo`,
+`personnes`, `z2m` (**9/9**). HA `200`. Snapshots `frigate:atelier` (`45226` o) et
+`frigate:piscine` (`36756` o) → `200 image/jpeg`.
+
+### P7 — Documentation
+La présente section.
+
+### Alternative non retenue
+Filtrer côté driver par liste blanche de caméras : **divergerait le code amont** `moli-frigate`
+et masquerait d'éventuelles vraies caméras ajoutées plus tard. Préféré : l'hygiène du broker.
+
+### Rollback (purge)
+Les topics fantômes étaient des restes retenus : leur purge est sans effet fonctionnel sur les 2
+caméras actives. Restauration éventuelle des états Moli : `data/state.json.bak-prefrigate-purge-*` → `state.json`.
+
+## Rollback (intégration)
 
 1. `crates/moli-frigate/src/lib.rs.bak-prefrigate` → `lib.rs`, retirer le test ajouté.
 2. `data/moli.toml.bak-prefrigate` → `moli.toml`.
