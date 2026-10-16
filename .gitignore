@@ -1,6 +1,10 @@
 # Browser tooling scratch (playwright-cli)
 .playwright-cli/
 
+# Python
+__pycache__/
+*.pyc
+
 # OS / editor noise
 .DS_Store
 *.swp
