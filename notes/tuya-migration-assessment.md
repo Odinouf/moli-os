@@ -85,3 +85,9 @@ d'image) et ces appareils exposent **0 DP** → rien à mapper.
 
 - Script temporaire `/tmp/tuya-export.py` retiré de la VM HAOS après usage.
 - Aucun secret manipulé ni affiché (mode `--summary` sans clés). HA/ Moli non modifiés.
+
+## Suite (fait depuis)
+
+Un appareil migré refusait les commandes (« est injoignable ») : `tuya.json` n'avait aucune
+adresse et le repli `seek` ne démarrait pas. Diagnostic, IP prouvées, commandes testées et
+correctif `tuya-seek-home-network` : voir `ceiling-fan-tuya.md`.

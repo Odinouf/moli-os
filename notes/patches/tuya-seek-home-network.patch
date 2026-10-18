@@ -1,0 +1,92 @@
+diff --git a/crates/moli-tuya/src/lib.rs b/crates/moli-tuya/src/lib.rs
+index 9d08665..b171fe8 100644
+--- a/crates/moli-tuya/src/lib.rs
++++ b/crates/moli-tuya/src/lib.rs
+@@ -289,16 +289,18 @@ fn locate(
+     wanted: Vec<seek::Wanted>,
+     tasks: &mut tokio::task::JoinSet<()>,
+ ) {
+-    // The network is the one the known devices are on.
++    // The network is the one the known devices are on, else the home
++    // network this host sits on (a device file without any address must
++    // not freeze the search).
+     let known: HashSet<Ipv4Addr> = devices
+         .iter()
+         .filter_map(|(_, d)| d.ip.as_deref()?.parse().ok())
+         .collect();
+     if config.seek
+         && !wanted.is_empty()
+-        && let Some(first) = known.iter().min()
++        && let Some(first) = home_network(&known, host_ipv4())
+     {
+-        tasks.spawn(seek::seek(seek::neighbours(*first), wanted, known.clone()));
++        tasks.spawn(seek::seek(seek::neighbours(first), wanted, known.clone()));
+     }
+     if config.discovery {
+         let pinned: HashMap<String, bool> = devices
+@@ -309,6 +311,32 @@ fn locate(
+     }
+ }
+ 
++/// The /24 to sweep for the devices still without an address: the one the
++/// known devices are on, else the one this host is on (a home network,
++/// found without configuration by asking the routing table which address
++/// would reach the outside).
++fn home_network(known: &HashSet<Ipv4Addr>, host: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
++    if let Some(first) = known.iter().min() {
++        return Some(*first);
++    }
++    // No address in the device file: use the home network this host sits
++    // on. The choice itself is pure (tested); the probe stays in host_ipv4.
++    host
++}
++
++/// The address this host would use to reach the outside, asked of the
++/// routing table (no packet leaves). `None` when there is no IPv4 route —
++/// the caller then sweeps nothing rather than guessing.
++fn host_ipv4() -> Option<Ipv4Addr> {
++    let probe = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
++    // No packet leaves: this only asks the kernel which source it would use.
++    probe.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
++    match probe.local_addr().ok()?.ip() {
++        std::net::IpAddr::V4(ip) => Some(ip),
++        std::net::IpAddr::V6(_) => None,
++    }
++}
++
+ /// Hands a command to its device's link; the reply comes from the link.
+ fn dispatch(
+     command: moli_runtime::CommandRequest,
+@@ -496,6 +524,32 @@ pub fn merge_import(
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn home_network_prefers_a_known_address() {
++        let known: HashSet<Ipv4Addr> = [
++            "10.20.30.40".parse().unwrap(),
++            "10.20.30.41".parse().unwrap(),
++        ]
++        .into_iter()
++        .collect();
++        // The lowest known address wins; the host address is ignored.
++        assert_eq!(
++            home_network(&known, Some("10.0.0.1".parse().unwrap())),
++            Some("10.20.30.41".parse().unwrap())
++        );
++    }
++
++    #[test]
++    fn home_network_falls_back_to_the_host() {
++        // The regression path: no address in the file, so the swept
++        // network is the host's own (the bug was sweeping nothing).
++        let empty: HashSet<Ipv4Addr> = HashSet::new();
++        let host: Ipv4Addr = "10.20.30.42".parse().unwrap();
++        assert_eq!(home_network(&empty, Some(host)), Some(host));
++        // No IPv4 route on the host: nothing to sweep, never a panic.
++        assert_eq!(home_network(&empty, None), None);
++    }
++
+     #[test]
+     fn imports_keep_hand_edits_and_separate_keys() {
+         let import: ImportFile = serde_json::from_value(serde_json::json!({
