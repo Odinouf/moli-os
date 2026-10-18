@@ -1,0 +1,38 @@
+# SUPERSEDED by tablette2025-parity.patch (2026-10-18) — content already included there; do NOT apply on the current base.
+
+diff --git a/web/src/maison/lib/icons.js b/web/src/maison/lib/icons.js
+index 519d8a3..5ce3868 100644
+--- a/web/src/maison/lib/icons.js
++++ b/web/src/maison/lib/icons.js
+@@ -66,6 +66,7 @@ import {
+   mdiArrowTopRight,
+   mdiBedKingOutline,
+   mdiBedOutline,
++  mdiBottleWineOutline,
+   mdiBellRingOutline,
+   mdiBird,
+   mdiCameraOutline,
+@@ -90,6 +91,7 @@ import {
+   mdiGate,
+   mdiHomeOutline,
+   mdiHomeRoof,
++  mdiHomeCityOutline,
+   mdiInformationOutline,
+   mdiKeyboardOutline,
+   mdiLeaf,
+@@ -214,6 +216,7 @@ export const icons = {
+   'arrow-top-right': mdiArrowTopRight,
+   'bed-king-outline': mdiBedKingOutline,
+   'bed-outline': mdiBedOutline,
++  'bottle-wine': mdiBottleWineOutline,
+   bell: mdiBellRingOutline,
+   bird: mdiBird,
+   camera: mdiCameraOutline,
+@@ -238,6 +241,7 @@ export const icons = {
+   gate: mdiGate,
+   home: mdiHomeOutline,
+   'home-roof': mdiHomeRoof,
++  'home-city': mdiHomeCityOutline,
+   info: mdiInformationOutline,
+   keyboard: mdiKeyboardOutline,
+   leaf: mdiLeaf,

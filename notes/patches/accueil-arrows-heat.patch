@@ -1,0 +1,144 @@
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+index 0991ec3..8401ece 100644
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -38,12 +38,10 @@
+   "maison.accueil.allumees_one": "{count} on",
+   "maison.accueil.allumees_other": "{count} on",
+   "maison.accueil.tout_eteint": "all off",
+-  "maison.accueil.toutes_pieces": "All rooms",
+   "maison.accueil.ambiance": "Mood",
+   "maison.accueil.piece": "Room",
+   "maison.accueil.clim": "Air conditioning",
+   "maison.accueil.devant_porte": "At the door",
+-  "maison.accueil.toutes_cameras": "All cameras",
+   "maison.accueil.dernier_passage": "Last seen {when}",
+   "maison.accueil.personne": "No one for two days",
+   "maison.air.tres_bon": "Very good",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index 0c1e9fc..6b991ec 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -38,12 +38,10 @@
+   "maison.accueil.allumees_one": "{count} allumée",
+   "maison.accueil.allumees_other": "{count} allumées",
+   "maison.accueil.tout_eteint": "tout est éteint",
+-  "maison.accueil.toutes_pieces": "Toutes les pièces",
+   "maison.accueil.ambiance": "Ambiance",
+   "maison.accueil.piece": "Pièce",
+   "maison.accueil.clim": "Climatisation",
+   "maison.accueil.devant_porte": "Devant la porte",
+-  "maison.accueil.toutes_cameras": "Toutes les caméras",
+   "maison.accueil.dernier_passage": "Dernier passage {when}",
+   "maison.accueil.personne": "Personne depuis deux jours",
+   "maison.accueil.pieces_titre": "Pièces",
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index d90b717..e880035 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -192,7 +192,6 @@
+   <div class="sections">
+     <div class="col">
+       <WeekWeather />
+-      <HeatingBar />
+ 
+       {#each rooms as room (room.name)}
+         <RoomCard {room} icons={lightsCompact} />
+@@ -205,7 +204,6 @@
+               <button role="radio" aria-checked={!lightsCompact} class:active={!lightsCompact} onclick={() => setLightsCompact(false)} aria-label={t('maison.pieces.avec_noms')} title={t('maison.pieces.avec_noms')}>Aa</button>
+               <button role="radio" aria-checked={lightsCompact} class:active={lightsCompact} onclick={() => setLightsCompact(true)} aria-label={t('maison.pieces.icones')} title={t('maison.pieces.icones')}><Icon name="light" size={15} /></button>
+             </div>
+-            <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
+           </div>
+         </div>
+         <div class="tiles">
+@@ -237,14 +235,13 @@
+           </div>
+         </section>
+       {/if}
++
++      <HeatingBar />
+     </div>
+ 
+     <div class="col">
+       {#if bell}
+         <section class="card doorbell" aria-label={t('maison.accueil.devant_porte')}>
+-          <div class="card-head">
+-            <a class="more" href="#/cameras" aria-label={t('maison.accueil.toutes_cameras')}><Icon name="arrow-top-right" size={18} /></a>
+-          </div>
+           <CameraTile id={bell.id} name={bell.name} refresh={15} />
+           <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
+         </section>
+diff --git a/web/src/maison/ui/RoomStrip.svelte b/web/src/maison/ui/RoomStrip.svelte
+index 7ea6527..1737843 100644
+--- a/web/src/maison/ui/RoomStrip.svelte
++++ b/web/src/maison/ui/RoomStrip.svelte
+@@ -30,9 +30,6 @@
+ 
+ {#if rooms.length}
+   <section class="card rooms" aria-label={t('maison.accueil.pieces_titre')}>
+-    <div class="card-head">
+-      <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
+-    </div>
+     <div class="strip">
+       {#each rooms as r (r.name)}
+         <a class="pastille {tone(r.temp)}" href="#/pieces" title={r.name}>
+@@ -57,12 +54,6 @@
+     gap: 12px;
+   }
+ 
+-  .card-head {
+-    display: flex;
+-    align-items: center;
+-    justify-content: space-between;
+-  }
+-
+   .strip {
+     display: flex;
+     gap: 10px;
+diff --git a/web/src/maison/ui/SkyHero.svelte b/web/src/maison/ui/SkyHero.svelte
+index 39bb5dd..b9fca88 100644
+--- a/web/src/maison/ui/SkyHero.svelte
++++ b/web/src/maison/ui/SkyHero.svelte
+@@ -6,7 +6,7 @@
+   // one). A tap opens the detail: the next day on the map, the hours and the
+   // days to come.
+   import { onMount } from 'svelte';
+-  import { home, value, clock, greeting, num, longDate } from '../lib/home.svelte.js';
++  import { home, value, clock, num, longDate } from '../lib/home.svelte.js';
+   import { sky, watchSky, hours, outlook, localTs } from '../lib/sky.svelte.js';
+   import { weatherOf } from '../lib/icons.js';
+   import { t } from '../../lib/i18n.svelte.js';
+@@ -47,7 +47,6 @@
+ <section class="hero">
+   <div class="hello">
+     <p class="date">{longDate(home.now)}</p>
+-    <h1>{greeting(home.now)}</h1>
+     <p class="time num">{clock(home.now)}</p>
+   </div>
+ 
+@@ -98,13 +97,6 @@
+     font-weight: 600;
+   }
+ 
+-  h1 {
+-    font-size: 22px;
+-    font-weight: 750;
+-    letter-spacing: -0.03em;
+-    line-height: 1.1;
+-  }
+-
+   .time {
+     font-size: 40px;
+     font-weight: 600;
+@@ -206,10 +198,6 @@
+       align-self: start;
+     }
+ 
+-    h1 {
+-      font-size: 20px;
+-    }
+-
+     .time {
+       font-size: 34px;
+     }

@@ -63,7 +63,11 @@ gérées côté HA). Reprise possible si : (a) l'addon expose son port, (b) le p
 
 ## En attendant
 
-La page `#/dehors` reste câblée sur `pool_pump = z2m:0xa4c138bb3c3e1f88` (prise **Zigbee**) —
-**décision utilisateur du 2026-10-16 : garder la tuile telle quelle** en sachant que ce n'est pas
-le switch Z-Wave de la pompe. La tuile reflète l'état de la prise Zigbee ; le pilotage réel de la
-pompe (Z-Wave) reste assuré par l'automation HA.
+> ⚠️ **Obsolète depuis le 2026-10-17** — la prise Zigbee `z2m:0xa4c138bb3c3e1f88` s'est
+> révélée être la prise **lave-vaisselle** (pas la pompe) : le câblage `pool_pump` de la
+> page `#/dehors` a été **retiré**. Voir `notes/prise-lave-vaisselle.md` (P1–P3).
+
+Historiquement, la page `#/dehors` était câblée sur `pool_pump = z2m:0xa4c138bb3c3e1f88`
+(prise **Zigbee**), en sachant que ce n'était pas le switch Z-Wave de la pompe. Cette
+référence n'existe plus : la tuile « Pompe » de `#/dehors` a été supprimée. Le pilotage réel
+de la pompe (Z-Wave, `switch.prise_piscine_2`) reste assuré par l'automation HA, hors Moli.

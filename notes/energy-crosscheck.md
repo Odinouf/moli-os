@@ -22,7 +22,7 @@ Moli expose les **mesures brutes par appareil** (`/api/devices`, page Atelier) e
 | Tondeuse | `sensor.prise_tondeuse_energy` | `0xa4c138287ee9c869` | OK |
 | Chaudière | `sensor.prise_chaudiere_energy` | `0xa4c138b252971b97` | OK |
 | Frigos | `sensor.prise_frigos_energy` | `0xa4c13842b692dcc9` | OK |
-| Pompe Piscine | `sensor.prise_pompe_piscine_energy` | `0xa4c138bb3c3e1f88` | OK |
+| Pompe Piscine → **Lave-Vaisselle** | `sensor.prise_pompe_piscine_energy` | `0xa4c138bb3c3e1f88` | OK |
 | Imprimante 3D | `sensor.prise_imprimante_3d_energy` | `0xa4c138d04532f541` | OK |
 | PC | `sensor.zig_prise_pc_energy` | `0xa4c138a07a1d1df2` | OK |
 | VMC | `sensor.zig_prise_vmc_energy` | `0xa4c13828ef638d36` | OK |
@@ -62,8 +62,9 @@ pour que la page Énergie rende :
 - **1 compteur `total`** : « Maison » sur la pince *Tore Apartment*
   (`z2m:0xd878f0fffeaff727/energy`, `power` associé). C'est la maison entière (choix humain).
 - **7 compteurs `appliance`** en miroir du `device_consumption` HA (parc z2m) : Tondeuse,
-  Chaudière, Frigos, Pompe Piscine, Imprimante 3D, PC, VMC — chacun `point = .../energy`,
-  `power = .../power`.
+  Chaudière, Frigos, **Lave-Vaisselle** (ex-« Pompe Piscine », `id = pompe_piscine` conservé
+  comme clé d'historique — cf. `prise-lave-vaisselle.md`), Imprimante 3D, PC, VMC — chacun
+  `point = .../energy`, `power = .../power`.
 
 **Pas de tarif ni de jauge « en direct »** : le tarif périodique exige un point PTEC
 (Linky) et la jauge fournisseur un point PAPP — aucun des deux n'est dans zigbee2mqtt (le

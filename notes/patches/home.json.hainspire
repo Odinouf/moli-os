@@ -1,4 +1,5 @@
 {
+  "_note": "HISTORIQUE — fige l'étape accueil-ha-inspire (2026-10-16). NE PAS utiliser tel quel : voir tablette2025-parity.patch pour l'état courant. Différences connues : pool_pump retiré/vu prise Lave-Vaisselle (prise-lave-vaisselle.md) ; champ icon par pièce absent (accueil-room-icons.md).",
   "title": "Maison",
   "rooms": [
     { "name": "Salon" },

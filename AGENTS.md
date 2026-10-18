@@ -156,10 +156,21 @@ ssh moli-os 'cd /opt/moli-os && git apply /tmp/x.patch'
 ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d --force-recreate'  # web embarqué (rust-embed)
 ```
 
-**Ordre des patchs Accueil** (chacun part de l'état du précédent) :
+**Ordre des patchs Accueil** (chaîne **legacy/historique uniquement** — ne plus appliquer sur la base courante ; chaque patch part de l'état du précédent) :
 `accueil-ha-inspire` → `accueil-clim-conditional` → `accueil-sections` → `accueil-tidy`
-→ `accueil-heure-salon-sections` → `accueil-plan-frigate`.
-Voir `notes/accueil-*.md` (ordre + supersession).
+→ `accueil-heure-salon-sections` → `accueil-plan-frigate` → `accueil-arrows-heat`
+→ `accueil-motion-colonnes` → `accueil-tempo` → `accueil-room-icons`.
+Voir `notes/accueil-*.md` (ordre + supersession). Cette chaîne est **superseded par
+`tablette2025-parity.patch`** (ci-dessous) : `accueil-tempo` et `accueil-room-icons` y sont
+déjà inclus verbatim — ne pas les appliquer par-dessus la parité.
+
+⚠️ **Base courante : `tablette2025-parity.patch`.** Cumulatif depuis `d54c3de`, il
+**remplace toute la chaîne `accueil-*`** ci-dessus (parité complète du dashboard HA
+`tablette-2025` : Wifi/Solaire, pilotes Linky/ESPHome, sidecars voix). Ne **pas**
+enchaîner la chaîne `accueil-*` par-dessus, ni appliquer les deux. Détail, preuves et
+rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison :
+`linky-driver.patch`, `esphome-full-entities.patch`, `ha-moli-linky-bridge.json`,
+`compose.override.yaml.voice`.
 
 ### 6. Montée de version
 
@@ -235,7 +246,12 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `fuseaux-horaires.md` | Fuseau LXC/conteneur |
 | `dehors.md` | Page Dehors (météo/air/piscine) |
 | `dashboard-clim.md` | Carte clim conditionnelle |
-| `accueil-*.md` | Refontes de l'Accueil + ordre des patchs |
+| `accueil-*.md` | Refontes de l'Accueil + ordre des patchs (chaîne historique) |
+| `tablette-2025-parity.md` | **Parité tablette-2025** : portage complet du dashboard HA (Wifi/Solaire, pilotes Linky/ESPHome, voix) — patch cumulatif `tablette2025-parity` |
+| `tempo-plugin.md` | Profil `tempo` + témoin couleur EDF (patch `accueil-tempo`, **legacy** : contenu déjà dans `tablette2025-parity`) |
+| `accueil-room-icons.md` | Icônes de pièce selon leur fonction (patch `accueil-room-icons`, **legacy** : contenu déjà dans `tablette2025-parity`) |
+| `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
+| `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |
 | `tablette-lenovo-moli.md` | Tablette kiosque (Fully Kiosk → Moli) |
 | `energy-crosscheck.md` | Croisement énergie HA ↔ Moli |
 | `security-audit.md` | Audit code malveillant |

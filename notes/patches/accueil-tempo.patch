@@ -1,0 +1,118 @@
+# SUPERSEDED by tablette2025-parity.patch (2026-10-18) — content already included there; do NOT apply on the current base.
+
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+index 8401ece..ed38e55 100644
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -201,6 +201,13 @@
+   "maison.accueil.badges_portes_fermees": "Doors closed",
+   "maison.accueil.badges_portes_muettes": "Doors: unknown state",
+   "maison.accueil.badges_conso": "{value} live",
++  "maison.accueil.badges_tempo": "EDF Tempo colour",
++  "maison.accueil.badges_tempo_jour": "today",
++  "maison.accueil.badges_tempo_demain": "tom.",
++  "maison.tempo.bleu": "blue",
++  "maison.tempo.blanc": "white",
++  "maison.tempo.rouge": "red",
++  "maison.tempo.inconnu": "unknown",
+   "maison.accueil.plan_ouvrir": "Open the plan",
+   "maison.accueil.plan_vide": "No plan yet.",
+   "maison.accueil.piscine_ouvrir": "Open the pool",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index 6b991ec..7119dfc 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -209,6 +209,13 @@
+   "maison.accueil.badges_portes_fermees": "Portes fermées",
+   "maison.accueil.badges_portes_muettes": "Portes : état inconnu",
+   "maison.accueil.badges_conso": "{value} en direct",
++  "maison.accueil.badges_tempo": "Couleur Tempo EDF",
++  "maison.accueil.badges_tempo_jour": "auj.",
++  "maison.accueil.badges_tempo_demain": "dem.",
++  "maison.tempo.bleu": "bleu",
++  "maison.tempo.blanc": "blanc",
++  "maison.tempo.rouge": "rouge",
++  "maison.tempo.inconnu": "inconnu",
+   "maison.accueil.plan_ouvrir": "Ouvrir le plan",
+   "maison.accueil.plan_vide": "Aucun plan pour l’instant.",
+   "maison.accueil.piscine_ouvrir": "Ouvrir la piscine",
+diff --git a/web/src/maison/ui/AccueilBadges.svelte b/web/src/maison/ui/AccueilBadges.svelte
+index b93ee1b..07362d5 100644
+--- a/web/src/maison/ui/AccueilBadges.svelte
++++ b/web/src/maison/ui/AccueilBadges.svelte
+@@ -26,6 +26,13 @@
+   const watts = $derived(meter ? value(meter, 'power') : null);
+   const wattsShown = $derived(watts != null ? Math.round(Math.abs(Number(watts))) : null);
+ 
++  // Tempo (EDF): the day's colour and tomorrow's, beside the live power.
++  const tempoId = $derived(home.config?.outdoor?.tempo ?? null);
++  const tempoKnown = $derived(tempoId && device(tempoId) && value(tempoId, 'today') != null);
++  const tempoDay = $derived(tempoKnown ? value(tempoId, 'today') : null);
++  const tempoNext = $derived(tempoKnown ? value(tempoId, 'tomorrow') : null);
++  const tempoName = (c) => (c ? t(`maison.tempo.${c}`) : t('maison.tempo.inconnu'));
++
+   const switches = $derived(home.config?.badges?.switches ?? []);
+ </script>
+ 
+@@ -48,6 +55,17 @@
+     </a>
+   {/if}
+ 
++  {#if tempoKnown}
++    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo')} aria-label={t('maison.accueil.badges_tempo')}>
++      <i class="dot {tempoDay}" aria-hidden="true"></i>
++      <span class="tl">{t('maison.accueil.badges_tempo_jour')}</span>{tempoName(tempoDay)}
++      {#if tempoNext && tempoNext !== 'inconnu'}
++        <i class="dot {tempoNext}" aria-hidden="true"></i>
++        <span class="tl">{t('maison.accueil.badges_tempo_demain')}</span>{tempoName(tempoNext)}
++      {/if}
++    </a>
++  {/if}
++
+   {#each switches as s (s.id)}
+     <button class="badge" class:on={isOn(s.id)} class:busy={pending(s.id)} aria-pressed={isOn(s.id)} onclick={() => toggle(s.id, s.name)}>
+       <Icon name={s.icon ?? 'power'} size={16} />{s.name}
+@@ -107,4 +125,43 @@
+     opacity: 0.55;
+     cursor: progress;
+   }
++
++  .badge.tempo {
++    gap: 6px;
++    color: var(--ink-2);
++  }
++
++  .badge.tempo .tl {
++    color: var(--ink-3);
++    font-weight: 600;
++  }
++
++  .badge.tempo .dot {
++    width: 10px;
++    height: 10px;
++    border-radius: 50%;
++    background: var(--ink-3);
++    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
++  }
++
++  .badge.tempo .dot + .tl {
++    margin-left: 2px;
++  }
++
++  .badge.tempo .dot.bleu {
++    background: #4b74f2;
++  }
++
++  .badge.tempo .dot.rouge {
++    background: #df5a40;
++  }
++
++  .badge.tempo .dot.blanc {
++    background: #eef1f6;
++  }
++
++  .badge.tempo .dot.inconnu {
++    background: transparent;
++    box-shadow: inset 0 0 0 1px var(--ink-3);
++  }
+ </style>

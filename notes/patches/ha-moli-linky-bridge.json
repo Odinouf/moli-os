@@ -1,0 +1,51 @@
+{
+  "id": "moli_linky_mqtt_bridge",
+  "alias": "Moli ← Linky (MQTT moli/linky/#)",
+  "description": "Republie les chiffres Linky/Tempo sous moli/linky/* (retained) pour le driver moli-linky.",
+  "mode": "single",
+  "max_exceeded": "silent",
+  "trigger": [
+    {"platform": "time_pattern", "minutes": "/2"},
+    {"platform": "state", "entity_id": "sensor.compteur_energie_principal_energie_globale_jour"},
+    {"platform": "state", "entity_id": "sensor.tore_apartment_energie_appart1_jour"},
+    {"platform": "state", "entity_id": "sensor.tore_apartment_power"},
+    {"platform": "state", "entity_id": "sensor.residuel_hors_appartement_mesure"},
+    {"platform": "state", "entity_id": "sensor.0x385cfbfffe274bd7_power"},
+    {"platform": "state", "entity_id": "sensor.rte_tempo_couleur_actuelle"},
+    {"platform": "state", "entity_id": "binary_sensor.rte_tempo_heures_creuses"},
+    {"platform": "state", "entity_id": "sensor.daily_energy_cost_tempo"}
+  ],
+  "variables": {
+    "base": "moli/linky",
+    "couleur": "{{ states('sensor.rte_tempo_couleur_actuelle') | lower }}",
+    "hc": "{{ is_state('binary_sensor.rte_tempo_heures_creuses','on') }}",
+    "k": "{{ {'bleu':'blue','blanc':'white','rouge':'red'}.get(states('sensor.rte_tempo_couleur_actuelle') | lower, 'blue') }}",
+    "su": "{{ 'hc' if is_state('binary_sensor.rte_tempo_heures_creuses','on') else 'hp' }}",
+    "prix": "{{ states('sensor.edf_tempo_price_' ~ k ~ '_' ~ su) | float(0) }}",
+    "period": "{{ 'bleu' if k == 'blue' else ('blanc' if k == 'white' else ('rouge' if k == 'red' else 'inconnu')) }}_{{ su }}",
+    "global_jour": "{{ states('sensor.compteur_energie_principal_energie_globale_jour') | float(0) }}",
+    "appart_jour": "{{ states('sensor.tore_apartment_energie_appart1_jour') | float(0) }}"
+  },
+  "action": [
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/tempo_couleur", "payload": "{{ couleur }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/tempo_hc", "payload": "{{ hc }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/period", "payload": "{{ period }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix", "payload": "{{ prix }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/global_jour", "payload": "{{ global_jour }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/appart_jour", "payload": "{{ appart_jour }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/residuel_jour", "payload": "{{ (global_jour - appart_jour) | round(3) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/residuel_cumul", "payload": "{{ states('sensor.residuel_energie_hors_appartement_mesure') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/index", "payload": "{{ states('sensor.linky_17257887094391_consumption') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/power_appart", "payload": "{{ states('sensor.tore_apartment_power') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/power_residuel", "payload": "{{ states('sensor.residuel_hors_appartement_mesure') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/power_principale", "payload": "{{ states('sensor.0x385cfbfffe274bd7_power') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/cout_jour", "payload": "{{ (global_jour * prix) | round(3) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/cout_hier", "payload": "{{ states('sensor.daily_energy_cost_tempo') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_bleu_hp", "payload": "{{ states('sensor.edf_tempo_price_blue_hp') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_bleu_hc", "payload": "{{ states('sensor.edf_tempo_price_blue_hc') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_blanc_hp", "payload": "{{ states('sensor.edf_tempo_price_white_hp') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_blanc_hc", "payload": "{{ states('sensor.edf_tempo_price_white_hc') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_rouge_hp", "payload": "{{ states('sensor.edf_tempo_price_red_hp') | float(0) }}", "retain": true}},
+    {"service": "mqtt.publish", "data": {"topic": "moli/linky/prix_rouge_hc", "payload": "{{ states('sensor.edf_tempo_price_red_hc') | float(0) }}", "retain": true}}
+  ]
+}

@@ -1,4 +1,5 @@
 {
+  "_note": "HISTORIQUE — export HA pour traçabilité. Conserve la typo d'id de zone 'sallon' telle quelle (fidélité export HA ; rien n'en dépend). Renommage 'salon' à faire côté HA source si souhaité, puis ré-exporter.",
   "people": [
     {
       "id": "fabienne",
@@ -19,6 +20,31 @@
       "created": 1792156918672
     }
   ],
-  "zones": [],
+  "zones": [
+    {
+      "id": "sdec",
+      "name": "SDEC",
+      "latitude": 46.162236630580146,
+      "longitude": 1.8724071979522707,
+      "radius": 455.17482143235827,
+      "icon": "mdi:account-edit-outline"
+    },
+    {
+      "id": "sallon",
+      "name": "Salon",
+      "latitude": 46.16824054515383,
+      "longitude": 1.8701434135437014,
+      "radius": 223.64231110188504,
+      "icon": "mdi:hair-dryer"
+    },
+    {
+      "id": "ecole",
+      "name": "Ecole",
+      "latitude": 46.21155629870787,
+      "longitude": 1.894625384531219,
+      "radius": 271.0,
+      "icon": "mdi:school"
+    }
+  ],
   "invites": []
 }

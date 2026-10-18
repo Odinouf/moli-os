@@ -40,7 +40,9 @@ Nouveaux commits le 2026-10-14 :
 - `notes/` : notes opérationnelles et relevés — version tracking, diffs de
   `integrations/`, déploiements LXC 125, migrations (Hue, zwave, tuya, frigate),
   refontes du dashboard (`accueil-*`, `dashboard-clim`, `dehors`, `fuseaux-horaires`,
-  `tablette-lenovo-moli`), audits (`security-audit`, `energy-crosscheck`).
+  `tablette-lenovo-moli`), la **parité `tablette-2025`** (`tablette-2025-parity.md`),
+  les **satellites vocal/son** (`satellites-vocal-son.md` : ESP32 S3 Box, Alexa, Piper/Whisper),
+  audits (`security-audit`, `energy-crosscheck`).
 - `notes/patches/` : patches du **fork local** du dashboard Moli (édits ponctuels à
   ré-appliquer après chaque resync/mise à jour du dépôt source, et à remonter en **PR amont**
   `github.com/rudy-io/moli-os`). Contient aussi des **échantillons de config** (`.hainspire`)
@@ -55,12 +57,28 @@ Nouveaux commits le 2026-10-14 :
   ```
   (copier le patch sur le CT avant : `cat notes/patches/x.patch | ssh moli-os 'cat > /tmp/x.patch'`).
 
-  **Ordre des patches Accueil** (chacun part de l'état du précédent) :
+  **Ordre des patches Accueil** (chaîne **legacy/historique uniquement** — superseded par
+  `tablette2025-parity.patch`, ne plus appliquer sur la base courante ; chacun part de l'état
+  du précédent) :
   `accueil-ha-inspire` → `accueil-clim-conditional` → `accueil-sections` → `accueil-tidy`
-  → `accueil-heure-salon-sections` → `accueil-plan-frigate`.
+  → `accueil-heure-salon-sections` → `accueil-plan-frigate` → `accueil-arrows-heat`
+  → `accueil-motion-colonnes` → `accueil-tempo` → `accueil-room-icons`.
   Voir `notes/accueil-sections.md`, `notes/accueil-tidy.md`,
-  `notes/accueil-heure-salon-sections.md` et `notes/accueil-plan-frigate.md`
+  `notes/accueil-heure-salon-sections.md`, `notes/accueil-plan-frigate.md`,
+  `notes/accueil-arrows-heat.md`, `notes/accueil-motion-colonnes.md` et
+  `notes/accueil-room-icons.md`
   (ordre + supersession documentés).
+  Le patch `accueil-tempo` (profil `tempo` + témoin couleur EDF sur l'Accueil) est décrit
+  dans `notes/tempo-plugin.md`.
+  ⚠️ `accueil-tempo` et `accueil-room-icons` sont **déjà inclus verbatim** dans
+  `tablette2025-parity.patch` (base courante) — ne pas les appliquer par-dessus.
+
+  ⚠️ **Base courante : `tablette2025-parity.patch`** — cumulatif depuis `d54c3de`, il
+  **remplace toute la chaîne `accueil-*`** et porte la parité complète du dashboard HA
+  `tablette-2025` (Wifi/Solaire, pilotes Linky/ESPHome, sidecars voix). **Ne pas** appliquer
+  les deux. Détail et rollback : `notes/tablette-2025-parity.md`. Patchs associés :
+  `linky-driver.patch`, `esphome-full-entities.patch`, `ha-moli-linky-bridge.json`,
+  `compose.override.yaml.voice`.
 - Pas d'édition de code Moli ici (voir `AGENTS.md` du repo source pour ça).
 
 ## Règles

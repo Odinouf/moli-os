@@ -1,0 +1,40 @@
+# Échantillon : greffon « voix locale » (AC10/AC11).
+#
+# Deux sidecars Wyoming sur la boucle locale : Piper parle, Whisper écoute.
+# Ils tournent en network_mode host, liés à 127.0.0.1 (jamais exposés hors
+# de la machine). Moli s'y branche par [assistant] local_speech / local_listen.
+#
+# À coller dans /opt/moli-os/compose.override.yaml, puis :
+#   mkdir -p data/voice/piper data/voice/whisper
+#   docker compose up -d moli-piper moli-whisper
+#   # dans data/moli.toml, sous [assistant] :
+#   local_speech = "127.0.0.1:10200"     # Piper (TTS)
+#   local_listen = "127.0.0.1:10300"     # Whisper (STT)
+#   local_voice  = "fr_FR-siwis-medium"  # (défaut)
+#   docker compose restart moli-os
+#
+# Budget CT125 (2 Go) : whisper tiny-int8 + voix Piper medium tiennent dans
+# ~250 Mo ; le reste de la mémoire demeure libre.
+#
+# Preuve : GET /api/assistant → {"listen":true,"speak":true,"voices":{"local":true}}
+#          POST /api/assistant/speak {"text":"..."} → HTTP 200, WAV 22050 Hz
+#          POST /api/assistant/listen (WAV sur stdin) → {"engine":"local","text":"..."}
+
+services:
+  moli-piper:
+    image: rhasspy/wyoming-piper@sha256:7d39aafac409c2b6b09d999ed04d84c311d632e558b35baa60fad6aac722af7a
+    container_name: moli-piper
+    restart: unless-stopped
+    network_mode: host
+    command: --voice fr_FR-siwis-medium --uri tcp://127.0.0.1:10200
+    volumes:
+      - ./data/voice/piper:/data
+
+  moli-whisper:
+    image: rhasspy/wyoming-whisper@sha256:ba6fcb6056ebe237d15a325381763a80af2fc8fcedaa04f6a714a7375eb20d80
+    container_name: moli-whisper
+    restart: unless-stopped
+    network_mode: host
+    command: --model tiny-int8 --language fr --uri tcp://127.0.0.1:10300
+    volumes:
+      - ./data/voice/whisper:/data

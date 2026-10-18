@@ -78,25 +78,28 @@ Servi tel quel par `/api/home` (absent → `{}` → page vide). Contenu écrit :
     "weather": "meteo:api.open-meteo.com:443",
     "air": "air:air-quality-api.open-meteo.com:443",
     "pool": "z2m:0xa4c138062423ffff",
-    "pool_pump": "z2m:0xa4c138bb3c3e1f88",
     "garden_lights": [{ "id": "z2m:0xe0798dfffec9ae8f", "name": "Spot extérieur" }]
   }
 }
 ```
+
+> **MàJ 2026-10-17 :** le champ `pool_pump` (`z2m:0xa4c138bb3c3e1f88`) a été **retiré** — cette
+> prise est le lave-vaisselle, pas la pompe ; la tuile « Pompe » de `#/dehors` a disparu (cf.
+> `notes/prise-lave-vaisselle.md`). Le bloc ci-dessus reflète l'état courant.
 
 Appareils Moli câblés (réutilisés, pas venus de HA) :
 
 | Rôle | Device Moli | Nature |
 |------|-------------|--------|
 | Piscine (eau) | `z2m:0xa4c138062423ffff` | sonde température (14,7 °C) |
-| Pompe piscine | `z2m:0xa4c138bb3c3e1f88` | prise (point `state`) |
+| ~~Pompe piscine~~ | ~~`z2m:0xa4c138bb3c3e1f88`~~ | retirée 2026-10-17 (c'est le lave-vaisselle, cf. `prise-lave-vaisselle.md`) |
 | Jardin | `z2m:0xe0798dfffec9ae8f` | Spot extérieur |
 | Caméra | `frigate:atelier` | caméra Frigate |
 
-> **Caveat pompe :** la tuile « Pompe piscine » pointe volontairement sur la **prise Zigbee**
-> `z2m:0xa4c138bb3c3e1f88`, **pas** sur la vraie pompe de filtration (Z-Wave, entité HA
-> `switch.prise_piscine_2`, pilotée par une automation HA). Moli n'a pas encore de driver Z-Wave ;
-> cf. `notes/zwave-moli.md`. La tuile reflète donc la prise, pas le circuit de filtration réel.
+> **Caveat pompe (historique) :** la tuile « Pompe piscine » pointait volontairement sur la
+> prise Zigbee `z2m:0xa4c138bb3c3e1f88`. Cette prise s'est avérée être le **lave-vaisselle** ;
+> la tuile a été retirée (cf. `notes/prise-lave-vaisselle.md`). La vraie pompe de filtration
+> est Z-Wave (`switch.prise_piscine_2`, automation HA), absente de Moli (cf. `zwave-moli.md`).
 
 ### D6 — Restart
 

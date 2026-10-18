@@ -1,0 +1,119 @@
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index e880035..f46db92 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -193,10 +193,16 @@
+     <div class="col">
+       <WeekWeather />
+ 
+-      {#each rooms as room (room.name)}
++      {#each rooms.filter((r) => r.name === 'Salon') as room (room.name)}
+         <RoomCard {room} icons={lightsCompact} />
+       {/each}
+ 
++      <div class="rooms-grid">
++        {#each rooms.filter((r) => r.name !== 'Salon') as room (room.name)}
++          <RoomCard {room} icons={lightsCompact} />
++        {/each}
++      </div>
++
+       <section class="card lights" aria-label={t('maison.accueil.lumieres')}>
+         <div class="card-head">
+           <div class="head-actions">
+@@ -330,6 +336,21 @@
+     min-width: 0;
+   }
+ 
++  /* Salon keeps the full width; the other rooms pair up, two per row. */
++  .rooms-grid {
++    display: grid;
++    grid-template-columns: 1fr 1fr;
++    gap: 20px;
++    align-items: start;
++    min-width: 0;
++  }
++
++  @media (max-width: 760px) {
++    .rooms-grid {
++      grid-template-columns: 1fr;
++    }
++  }
++
+   @media (min-width: 1100px) {
+     .sections {
+       grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+diff --git a/web/src/maison/pages/Plan.svelte b/web/src/maison/pages/Plan.svelte
+index 83edaf9..c703b84 100644
+--- a/web/src/maison/pages/Plan.svelte
++++ b/web/src/maison/pages/Plan.svelte
+@@ -160,7 +160,11 @@
+   }
+ 
+   function opening(d) {
+-    return doorOpen(d.id) === true || motion(d.id);
++    return doorOpen(d.id) === true;
++  }
++
++  function triggered(d) {
++    return motion(d.id);
+   }
+ 
+   function lit(d) {
+@@ -401,6 +405,7 @@
+     class:lit={lit(d)}
+     class:alarm={alarming(d)}
+     class:open={opening(d)}
++    class:motion={triggered(d)}
+     class:off={d.online === false}
+     onclick={(e) => { e.stopPropagation(); tap(d); }}
+     onpointerdown={(e) => grab(e, spot)}
+@@ -910,6 +915,13 @@
+     color: var(--cool);
+   }
+ 
++  /* A movement is red (asked), but steady: the alarm keeps the pulsing
++     halo, so a walk-through never looks like smoke or a leak. */
++  .token.motion {
++    background: var(--alert);
++    color: #fff;
++  }
++
+   .token.alarm {
+     background: var(--alert);
+     color: #fff;
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+index f87c871..0a7c57f 100644
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -25,7 +25,8 @@
+ 
+   const lit = (d) =>
+     ['light', 'group', 'plug', 'tv', 'speaker'].includes(deviceKind(d)) && isOn(d.id);
+-  const opening = (d) => doorOpen(d.id) === true || motion(d.id);
++  const opening = (d) => doorOpen(d.id) === true;
++  const triggered = (d) => motion(d.id);
+   const alarming = (d) => value(d.id, 'smoke') === true || leak(d.id);
+ 
+   onMount(async () => {
+@@ -50,6 +51,7 @@
+             class="pin"
+             class:lit={lit(p.d)}
+             class:open={opening(p.d)}
++            class:motion={triggered(p.d)}
+             class:alarm={alarming(p.d)}
+             class:off={p.d.online === false}
+             style="left:{p.x * 100}%; top:{p.y * 100}%"
+@@ -135,6 +137,13 @@
+     color: var(--cool);
+   }
+ 
++  /* A movement is red (asked), but steady: the alarm keeps the pulsing
++     halo, so a walk-through never looks like smoke or a leak. */
++  .pin.motion .dot {
++    background: var(--alert);
++    color: #fff;
++  }
++
+   .pin.alarm .dot {
+     background: var(--alert);
+     color: #fff;
