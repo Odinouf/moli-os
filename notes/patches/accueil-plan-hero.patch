@@ -1,0 +1,88 @@
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+index 2af8bff..58f15de 100644
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -162,7 +162,7 @@
+ </script>
+ 
+ <div class="accueil">
+-  <SkyHero />
++  <SkyHero><PlanPreview /></SkyHero>
+ 
+   {#if modes.length}
+     <div class="modes" role="radiogroup" aria-label={t('maison.accueil.mode_maison')}>
+@@ -256,7 +256,6 @@
+         </section>
+       {/if}
+ 
+-      <PlanPreview />
+       {#if out.pool}<PoolCard />{/if}
+       <BinsCard />
+       <PlanOverlay />
+diff --git a/web/src/maison/ui/SkyHero.svelte b/web/src/maison/ui/SkyHero.svelte
+index b9fca88..f841e43 100644
+--- a/web/src/maison/ui/SkyHero.svelte
++++ b/web/src/maison/ui/SkyHero.svelte
+@@ -14,6 +14,8 @@
+   import WeatherMap from './WeatherMap.svelte';
+   import SkyDetail from './SkyDetail.svelte';
+ 
++  let { children } = $props();
++
+   const out = $derived(home.config?.outdoor ?? {});
+   const w = $derived(out.weather);
+   const day = $derived(value(w, 'daylight') !== false);
+@@ -50,6 +52,10 @@
+     <p class="time num">{clock(home.now)}</p>
+   </div>
+ 
++  {#if children}
++    <div class="hero-plan">{@render children()}</div>
++  {/if}
++
+   {#if w}
+     <button class="sky" class:live={sky.map} onclick={() => (open = true)} aria-label={t('maison.meteo.ouvrir', { label: now.label })}>
+       {#if sky.map}
+@@ -90,6 +96,31 @@
+ 
+   .hello {
+     align-self: end;
++    flex: none;
++  }
++
++  /* The plan, between the date/time and the weather. It takes the free
++     space (flex-grow) and centres the card there; the width is capped so
++     the header grows by a bounded height, not all the free width. */
++  .hero-plan {
++    flex: 1 1 auto;
++    min-width: 0;
++    display: grid;
++    place-items: center;
++  }
++
++  .hero-plan :global(.plan) {
++    max-width: 436px;
++    /* the plan stands on the page here: no card surface, no inner
++       padding, no shadow — a few dozen pixels of height saved. */
++    background: none;
++    box-shadow: none;
++    padding: 0;
++  }
++
++  /* The bare plan: a soft shadow gives it its own edge on the page. */
++  .hero-plan :global(.frame img) {
++    filter: drop-shadow(0 8px 22px rgb(23 32 56 / 18%));
+   }
+ 
+   .date {
+@@ -202,6 +233,10 @@
+       font-size: 34px;
+     }
+ 
++    .hero-plan {
++      flex: none;
++    }
++
+     .sky {
+       flex: none;
+       min-width: 0;
