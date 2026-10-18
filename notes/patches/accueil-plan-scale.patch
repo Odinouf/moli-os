@@ -1,0 +1,188 @@
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+index 0a7c57f..84c42c1 100644
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -16,12 +16,12 @@
+   import Icon from './Icon.svelte';
+ 
+   let floor = $state(null);
++  let frameW = $state(0);
++  let frameH = $state(0);
+ 
+-  const pins = $derived(
+-    (floor?.devices ?? [])
+-      .map((s) => ({ x: s.x, y: s.y, d: deviceOf(s.id) }))
+-      .filter((p) => p.d),
+-  );
++  // Geometry only: where the plan put each device. The device itself is
++  // looked up live in the markup, so a state tick never re-runs the layout.
++  const spots = $derived((floor?.devices ?? []).map((s) => ({ id: s.id, x: s.x, y: s.y })));
+ 
+   const lit = (d) =>
+     ['light', 'group', 'plug', 'tv', 'speaker'].includes(deviceKind(d)) && isOn(d.id);
+@@ -39,27 +39,83 @@
+       /* the card shows its empty state */
+     }
+   });
++
++  // The tokens are a fixed size on a small image, so two devices drawn in
++  // the same spot would hide one another. Every token is pulled toward its
++  // true place, but pushed apart from its too-close neighbours: a short,
++  // deterministic relaxation, run in the card's own pixels. Displacement
++  // stays small (measured ≈ 11 px worst case at 1280×800, bounded by
++  // SEP / 2 = 19 px per pair), so a token never strays far from its room.
++  const SEP = 38;
++  const ITERS = 200;
++  // The relaxation only depends on where the devices sit and how big the
++  // image is — not on their live state — so it runs here, keyed on that
++  // geometry, and a temperature tick never recomputes it.
++  const shown = $derived.by(() => {
++    const list = spots.map((s) => ({ s, x: s.x * frameW, y: s.y * frameH, vx: 0, vy: 0 }));
++    if (!frameW || !frameH) return list.map((e) => ({ id: e.s.id, x: e.s.x, y: e.s.y }));
++    for (let it = 0; it < ITERS; it++) {
++      for (const e of list) {
++        e.vx += (e.s.x * frameW - e.x) * 0.03;
++        e.vy += (e.s.y * frameH - e.y) * 0.03;
++      }
++      for (let i = 0; i < list.length; i++) {
++        for (let j = i + 1; j < list.length; j++) {
++          const a = list[i];
++          const b = list[j];
++          let dx = a.x - b.x;
++          let dy = a.y - b.y;
++          let dist = Math.hypot(dx, dy);
++          if (dist >= SEP) continue;
++          // Two tokens exactly on top of each other: split them sideways,
++          // a unit step (no division by a near-zero distance).
++          if (dist < 1e-6) {
++            dx = 1;
++            dy = 0;
++            dist = 1;
++          }
++          const push = (SEP - dist) * 0.5;
++          const ux = dx / dist;
++          const uy = dy / dist;
++          a.vx += ux * push;
++          a.vy += uy * push;
++          b.vx -= ux * push;
++          b.vy -= uy * push;
++        }
++      }
++      for (const e of list) {
++        e.vx *= 0.6;
++        e.vy *= 0.6;
++        e.x = Math.min(frameW, Math.max(0, e.x + e.vx));
++        e.y = Math.min(frameH, Math.max(0, e.y + e.vy));
++      }
++    }
++    return list.map((e) => ({ id: e.s.id, x: e.x / frameW, y: e.y / frameH }));
++  });
+ </script>
+ 
+ <a class="card plan" href="#/plan" aria-label={t('maison.accueil.plan_ouvrir')}>
+   {#if floor?.image}
+     <div class="shot">
+       <div class="frame">
+-        <img src="/api/plan/images/{floor.image}" alt="" loading="lazy" />
+-        {#each pins as p (p.d.id)}
+-          <span
+-            class="pin"
+-            class:lit={lit(p.d)}
+-            class:open={opening(p.d)}
+-            class:motion={triggered(p.d)}
+-            class:alarm={alarming(p.d)}
+-            class:off={p.d.online === false}
+-            style="left:{p.x * 100}%; top:{p.y * 100}%"
+-            title={nameOf(p.d.id)}
+-          >
+-            <span class="dot"><Icon name={pinIcon(p.d)} size={13} /></span>
+-            {#if pinReading(p.d)}<span class="reading">{pinReading(p.d)}</span>{/if}
+-          </span>
++        <img src="/api/plan/images/{floor.image}" alt="" loading="lazy" bind:clientWidth={frameW} bind:clientHeight={frameH} />
++        {#each shown as p (p.id)}
++          {@const d = deviceOf(p.id)}
++          {#if d}
++            <span
++              class="pin"
++              class:lit={lit(d)}
++              class:open={opening(d)}
++              class:motion={triggered(d)}
++              class:alarm={alarming(d)}
++              class:off={d.online === false}
++              style="left:{p.x * 100}%; top:{p.y * 100}%"
++              title={nameOf(d.id)}
++            >
++              <span class="dot"><Icon name={pinIcon(d)} size={16} /></span>
++              {#if pinReading(d)}<span class="reading">{pinReading(d)}</span>{/if}
++            </span>
++          {/if}
+         {/each}
+       </div>
+     </div>
+@@ -94,15 +150,15 @@
+     line-height: 0;
+     border-radius: var(--r-md);
+     background: var(--surface-2);
+-    overflow: hidden;
+   }
+ 
+   .frame img {
+     display: block;
+     max-width: 100%;
+-    max-height: 240px;
++    max-height: 360px;
+     width: auto;
+     height: auto;
++    border-radius: var(--r-md);
+   }
+ 
+   .pin {
+@@ -116,8 +172,8 @@
+   .dot {
+     display: grid;
+     place-items: center;
+-    width: 28px;
+-    height: 28px;
++    width: 34px;
++    height: 34px;
+     border-radius: 50%;
+     background: var(--surface);
+     color: var(--ink-2);
+@@ -128,8 +184,8 @@
+     background: var(--warm);
+     color: #1c1407;
+     box-shadow:
+-      0 0 0 4px var(--warm-glow),
+-      0 0 18px 4px var(--warm-glow);
++      0 0 0 5px var(--warm-glow),
++      0 0 22px 5px var(--warm-glow);
+   }
+ 
+   .pin.open .dot {
+@@ -156,7 +212,7 @@
+ 
+   @keyframes pulse {
+     50% {
+-      box-shadow: 0 0 0 8px var(--alert-soft);
++      box-shadow: 0 0 0 10px var(--alert-soft);
+     }
+   }
+ 
+@@ -167,13 +223,14 @@
+   }
+ 
+   .reading {
+-    margin-top: 2px;
+-    padding: 1px 5px;
++    margin-top: 3px;
++    padding: 1px 6px;
+     border-radius: 999px;
+     background: var(--surface);
+     color: var(--ink);
+-    font-size: 10px;
++    font-size: 12px;
+     font-weight: 700;
++    line-height: 1.4;
+     box-shadow: var(--shadow);
+   }
+ </style>
