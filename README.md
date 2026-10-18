@@ -79,6 +79,17 @@ Nouveaux commits le 2026-10-14 :
   les deux. Détail et rollback : `notes/tablette-2025-parity.md`. Patchs associés :
   `linky-driver.patch`, `esphome-full-entities.patch`, `ha-moli-linky-bridge.json`,
   `compose.override.yaml.voice`.
+
+  **Patchs locaux du 2026-10-18** (indépendants de la livraison 10-14 ci-dessus et de la parité) :
+  Correctif d'affichage de la carte Plan de l'Accueil (`PlanPreview`, échelle des
+  jetons + anti-chevauchement) : `notes/patches/accueil-plan-scale.patch`, à appliquer
+  **après** `tablette2025-parity.patch` — voir `notes/accueil-plan-scale.md`.
+  Déplacement de la carte Plan **dans l'en-tête** (entre date/heure et météo, **fond blanc
+  retiré**) : `notes/patches/accueil-plan-hero.patch`, appliqué **après** `accueil-plan-scale`
+  (fichiers distincts : `Accueil.svelte` + `SkyHero.svelte`) — voir `notes/accueil-plan-hero.md`.
+  Côté serveur (driver `tuya`) : `notes/patches/tuya-seek-home-network.patch` — `seek`
+  balaie le /24 de l'hôte quand `tuya.json` n'a aucune adresse (ventilo-lampe injoignable)
+  — voir `notes/ceiling-fan-tuya.md`.
 - Pas d'édition de code Moli ici (voir `AGENTS.md` du repo source pour ça).
 
 ## Règles

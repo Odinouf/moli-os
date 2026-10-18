@@ -172,6 +172,21 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 `linky-driver.patch`, `esphome-full-entities.patch`, `ha-moli-linky-bridge.json`,
 `compose.override.yaml.voice`.
 
+**Après** la parité, appliquer `accueil-plan-scale.patch` (échelle des pins du Plan de
+l'Accueil) : il part de l'état exact de `PlanPreview.svelte` créé par `tablette2025-parity`
+— voir `notes/accueil-plan-scale.md`.
+
+**Puis** `accueil-plan-hero.patch` : déplace la carte Plan **dans l'en-tête** (`SkyHero`),
+entre la date/heure et la météo, et **retire son fond blanc** (surface + ombre + padding) —
+voir `notes/accueil-plan-hero.md`. Appliqué **après** `accueil-plan-scale` par convention
+d'ordre, mais **fichiers disjoints** (`accueil-plan-scale` ne touche que `PlanPreview.svelte`,
+`accueil-plan-hero` que `Accueil.svelte` + `SkyHero.svelte`) : l'ordre n'est pas une
+dépendance.
+
+Autre patch de la base (côté serveur, driver `tuya`) : `tuya-seek-home-network.patch` —
+quand `tuya.json` n'a aucune adresse, `seek` balaie le /24 de l'hôte au lieu de ne rien
+faire. Voir `notes/ceiling-fan-tuya.md`.
+
 ### 6. Montée de version
 
 ```sh
@@ -243,6 +258,7 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `frigate-migration.md` | NVR Frigate (MQTT + images, purge caméras fantômes) |
 | `zwave-moli.md` | Étude Z-Wave (postponed) |
 | `tuya-migration-assessment.md` | Éval migration Tuya HA→Moli |
+| `ceiling-fan-tuya.md` | Ventilo-lampe Tuya « injoignable » : cause (`tuya.json` sans `ip` → `seek` jamais lancé), IP prouvées, commandes testées, correctif `tuya-seek-home-network` |
 | `fuseaux-horaires.md` | Fuseau LXC/conteneur |
 | `dehors.md` | Page Dehors (météo/air/piscine) |
 | `dashboard-clim.md` | Carte clim conditionnelle |
@@ -250,6 +266,8 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `tablette-2025-parity.md` | **Parité tablette-2025** : portage complet du dashboard HA (Wifi/Solaire, pilotes Linky/ESPHome, voix) — patch cumulatif `tablette2025-parity` |
 | `tempo-plugin.md` | Profil `tempo` + témoin couleur EDF (patch `accueil-tempo`, **legacy** : contenu déjà dans `tablette2025-parity`) |
 | `accueil-room-icons.md` | Icônes de pièce selon leur fonction (patch `accueil-room-icons`, **legacy** : contenu déjà dans `tablette2025-parity`) |
+| `accueil-plan-scale.md` | Échelle des pins du Plan de l'Accueil (`PlanPreview`) : jetons 34 px, lectures 12 px, anti-chevauchement — patch `accueil-plan-scale`, après `tablette2025-parity` |
+| `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero`, après `accueil-plan-scale` |
 | `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
 | `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |
 | `tablette-lenovo-moli.md` | Tablette kiosque (Fully Kiosk → Moli) |
