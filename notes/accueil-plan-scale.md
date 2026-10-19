@@ -78,3 +78,57 @@ ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d --f
 ## Hors périmètre
 
 `PlanOverlay` (carte températures) n'est pas touchée (option A limitée à `PlanPreview`).
+
+## Supersession (2026-10-19) — patch `accueil-plan-pins`
+
+Ce patch reste la référence pour la **relaxation anti-chevauchement** (algorithme et
+`ITERS` inchangés), mais ses **dimensions** sont remplacées par
+`notes/patches/accueil-plan-pins.patch` :
+
+| Jeton | `accueil-plan-scale` | `accueil-plan-pins` |
+|---|---|---|
+| `.dot` | 34 px | **22 px** |
+| icône `<Icon>` | 16 px | **12 px** |
+| halo `lit` | `0 0 0 5px` / `0 0 22px 5px` | **`0 0 0 3px` / `0 0 14px 3px`** |
+| `pulse` alarme | `0 0 0 10px` | **`0 0 0 6px`** |
+| `SEP` | 38 | **28** |
+| `EDGE` | absent (clamp à 0) | **18** |
+| relevés (`.reading`) | affichés sous le jeton | **supprimés sur l'Accueil** |
+
+`accueil-plan-scale` ne pose aucun `EDGE` : son clamp de relaxation est
+`Math.min(frameW, Math.max(0, …))`, le jeton peut donc toucher le bord de l'image.
+`accueil-plan-pins` introduit `EDGE = 18` (rayon 11 px + halo 3 px + 4 px de marge) et la
+garde `frameW < 3 * EDGE` qui retombe sur les positions brutes quand la carte est trop
+petite.
+
+Deux autres changements, dans `lib/home.svelte.js` et `lib/icons.js` :
+
+- **Filtrage par capacité** : `PlanPreview` ne dessine plus que les appareils qui
+  **acceptent une commande** (écriture `on_off` binaire, ou `on`/`state`/`switch_led`,
+  ou `system_mode`/`occupied_heating_setpoint`, ou `brightness`/`color`/`color_temp`),
+  plus ceux dont l'état se lit de loin (porte ouverte, mouvement, alarme). Un capteur de
+  température — y compris une sonde qui n'écrit que sa `*_calibration` ou ses `*_units` —
+  n'apparaît plus du tout. Sur le plan courant : 16 → **8 jetons**.
+- **Vannes et ventilateurs** : `deviceKind()` classe en `climate` un appareil qui porte
+  `system_mode` / `occupied_heating_setpoint` sans `target_temperature` (cas ZCL des TRV),
+  et `pinIcon()` leur donne l'icône **`radiator`** au lieu du `i` générique. Il classe en
+  `fan` ce qui porte `fan_speed` / `fan_control` / `fan_direction` / `fan_mode` /
+  `wind_speed`, ou dont le nom dit « fan » / « ventilateur » / « ventilo ».
+
+Le filtrage et le redimensionnement sont **locaux à `PlanPreview`** : la page Plan
+(`pages/Plan.svelte`) garde ses jetons à 18 px et ses relevés, puisque là les tuiles
+sont réellement actionnables. Le patch ne touche ni `maison.css`, ni `pages/Plan.svelte`,
+ni la grille `.sections`.
+
+**Preuves** (prod, 1280×800, après `build` + `up -d --force-recreate`) :
+`.pin` = 8, `.reading` = 0, `.dot` = 22 px, `<Icon>` = 12 px, 0 recouvrement, carte
+toujours `<a href="#/plan">`, `overflowX` = 0, `journal_failures: 0`, `14/14` drivers. La
+vanne thermostatique porte bien l'icône `radiator` ; la sonde de piscine n'est plus
+dessinée. Détail complet : `notes/accueil-plan-pins.md`.
+
+**Rollback** :
+
+```sh
+ssh moli-os 'cd /opt/moli-os && git apply -R /tmp/accueil-plan-pins.patch'
+ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d --force-recreate'
+```

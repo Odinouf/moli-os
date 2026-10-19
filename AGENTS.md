@@ -172,20 +172,44 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 `linky-driver.patch`, `esphome-full-entities.patch`, `ha-moli-linky-bridge.json`,
 `compose.override.yaml.voice`.
 
-**Après** la parité, appliquer `accueil-plan-scale.patch` (échelle des pins du Plan de
-l'Accueil) : il part de l'état exact de `PlanPreview.svelte` créé par `tablette2025-parity`
-— voir `notes/accueil-plan-scale.md`.
+**Ordre explicite de la chaîne Accueil** (vérifié de bout en bout sur un clone propre de
+`d54c3de` ; chaque patch part de l'état laissé par le précédent) :
 
-**Puis** `accueil-plan-hero.patch` : déplace la carte Plan **dans l'en-tête** (`SkyHero`),
-entre la date/heure et la météo, et **retire son fond blanc** (surface + ombre + padding) —
-voir `notes/accueil-plan-hero.md`. Appliqué **après** `accueil-plan-scale` par convention
-d'ordre, mais **fichiers disjoints** (`accueil-plan-scale` ne touche que `PlanPreview.svelte`,
-`accueil-plan-hero` que `Accueil.svelte` + `SkyHero.svelte`) : l'ordre n'est pas une
-dépendance.
+| # | Patch | Note |
+|---|---|---|
+| 1 | `tablette2025-parity.patch` | `notes/tablette-2025-parity.md` |
+| 2 | `accueil-plan-scale.patch` | `notes/accueil-plan-scale.md` — échelle des pins (`PlanPreview`) |
+| 3 | `accueil-plan-hero.patch` | `notes/accueil-plan-hero.md` — carte Plan dans l'en-tête |
+| 4 | `accueil-tablette2025-pixel.patch` | `notes/accueil-tablette2025-pixel.md` — refonte `Accueil.svelte` + 5 composants |
+| 5 | `accueil-plan-pins.patch` | `notes/accueil-plan-pins.md` — jetons réduits, sans relevés, filtrés |
+| 6 | `chauffage-trv.patch` | `notes/chauffage-trv.md` — hors Accueil, page `#/chauffage` |
+
+`accueil-tablette2025-pixel` **doit** passer après `accueil-plan-hero` : sur une base
+`parity` seule il échoue (`Accueil.svelte:190`), la carte Plan devant déjà être dans
+`SkyHero`. Appliquer les six dans cet ordre, sans en sauter un.
+
+**`accueil-plan-pins.patch`** : sur la carte Plan de l'Accueil, **retire les relevés**
+(pas de `.reading` : `pinReading` n'est plus importé), **réduit les jetons** (34 → 22 px,
+icône 16 → 12 px, `SEP` 38 → 28, `EDGE` 28 → 18, halo et pulsation à l'échelle) et
+**ne dessine que les appareils utiles** : ceux qu'on peut commander (`commands(d)` sur
+`p.access.write`), plus ceux dont l'état se lit de loin (porte ouverte, mouvement,
+alarme). Un thermomètre qui ne fait que rapporter **n'est plus dessiné du tout** — 16 → 8
+jetons. Ajoute aussi la détection des vannes thermostatiques (`system_mode` /
+`occupied_heating_setpoint` → `climate`, icône `radiator`) et la reconnaissance des
+ventilateurs (`fan_speed` / `fan_*` / `wind_speed`, ou nom de l'appareil). Filtrage et
+dimensions **locaux à `PlanPreview`** : la page Plan garde ses jetons 18 px et ses relevés.
 
 Autre patch de la base (côté serveur, driver `tuya`) : `tuya-seek-home-network.patch` —
 quand `tuya.json` n'a aucune adresse, `seek` balaie le /24 de l'hôte au lieu de ne rien
 faire. Voir `notes/ceiling-fan-tuya.md`.
+
+Enfin, **hors chaîne Accueil** : `chauffage-trv.patch` — page **Chauffage** (`#/chauffage`)
+avec, par vanne thermostatique, la consigne, la **table horaire hebdomadaire** éditable
+(7 pistes 24 h, paliers 15 min, 6 max) et le choix de qui pilote : le programme de la valve
+(`system_mode=auto`) ou les automatisations de la maison. Corrige aussi `ClimateCard`
+(une TRV expose `occupied_heating_setpoint`, pas `target_temperature`) et aligne le bandeau
+`HeatingBar` sur la **variante B** : il n'écrit plus que la consigne, laissant à la valve son
+override temporaire natif. Aucun fichier `crates/` touché. Voir `notes/chauffage-trv.md`.
 
 ### 6. Montée de version
 
@@ -266,8 +290,11 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `tablette-2025-parity.md` | **Parité tablette-2025** : portage complet du dashboard HA (Wifi/Solaire, pilotes Linky/ESPHome, voix) — patch cumulatif `tablette2025-parity` |
 | `tempo-plugin.md` | Profil `tempo` + témoin couleur EDF (patch `accueil-tempo`, **legacy** : contenu déjà dans `tablette2025-parity`) |
 | `accueil-room-icons.md` | Icônes de pièce selon leur fonction (patch `accueil-room-icons`, **legacy** : contenu déjà dans `tablette2025-parity`) |
-| `accueil-plan-scale.md` | Échelle des pins du Plan de l'Accueil (`PlanPreview`) : jetons 34 px, lectures 12 px, anti-chevauchement — patch `accueil-plan-scale`, après `tablette2025-parity` |
-| `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero`, après `accueil-plan-scale` |
+| `accueil-plan-scale.md` | Échelle des pins du Plan de l'Accueil (`PlanPreview`) : jetons 34 px, lectures 12 px, anti-chevauchement — patch `accueil-plan-scale` (n° 2 de la chaîne) — **superseded par `accueil-plan-pins`** (§ Supersession) |
+| `accueil-tablette2025-pixel.md` | Refonte du tableau de bord tablette : `Accueil.svelte` réécrit + 5 composants (`BatteryGauge`, `CameraCard`, `TabletteRow(s)`, `WeatherNow`) — patch `accueil-tablette2025-pixel` (n° 4 de la chaîne, **après** `accueil-plan-hero`) |
+| `accueil-plan-pins.md` | Jetons du Plan de l'Accueil réduits (22 px) **sans aucun relevé**, filtrés sur les appareils utiles (16 → 8) — patch `accueil-plan-pins` (n° 5 de la chaîne) |
+| `chauffage-trv.md` | Page **Chauffage** : consigne, table horaire hebdomadaire (7 pistes, 15 min) et choix programme/automatisations/éteinte par vanne — patch `chauffage-trv` (n° 6 de la chaîne, hors Accueil) |
+| `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero` (n° 3 de la chaîne) |
 | `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
 | `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |
 | `tablette-lenovo-moli.md` | Tablette kiosque (Fully Kiosk → Moli) |

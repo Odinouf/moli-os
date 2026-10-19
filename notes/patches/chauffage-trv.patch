@@ -1,0 +1,1745 @@
+diff --git a/web/src/maison/Maison.svelte b/web/src/maison/Maison.svelte
+--- a/web/src/maison/Maison.svelte
++++ b/web/src/maison/Maison.svelte
+@@ -11,6 +11,7 @@
+   import Accueil from './pages/Accueil.svelte';
+   import Salon from './pages/Salon.svelte';
+   import Pieces from './pages/Pieces.svelte';
++  import Chauffage from './pages/Chauffage.svelte';
+   import Plan from './pages/Plan.svelte';
+   import Cameras from './pages/Cameras.svelte';
+   import Energie from './pages/Energie.svelte';
+@@ -44,6 +45,7 @@
+     { path: 'moli', name: 'Moli', orb: true },
+     { path: 'salon', label: 'commun.nav.salon', icon: 'remote' },
+     { path: 'pieces', label: 'commun.nav.pieces', icon: 'light-group' },
++    { path: 'chauffage', label: 'commun.nav.chauffage', icon: 'radiator' },
+     { path: 'plan', label: 'commun.nav.plan', icon: 'home-roof' },
+     { path: 'carte', label: 'commun.nav.carte', icon: 'map' },
+     { path: 'cameras', label: 'commun.nav.cameras', icon: 'cctv' },
+@@ -149,6 +151,8 @@
+       <Salon />
+     {:else if page === 'pieces'}
+       <Pieces />
++    {:else if page === 'chauffage'}
++      <Chauffage />
+     {:else if page === 'plan'}
+       <Plan />
+     {:else if page === 'carte'}
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -507,3 +507,17 @@
+   if (s < 86400) return t('commun.relatif.heures', { n: Math.round(s / 3600) });
+   return t('commun.relatif.jours', { n: Math.round(s / 86400) });
+ }
++
++// ---- heating -------------------------------------------------------------------
++
++/** The thermostatic valves the house holds: a valve states its setpoint the
++ *  ZCL way (`system_mode` / `occupied_heating_setpoint`), never as a split's
++ *  `target_temperature`. Nothing is declared anywhere: the devices say so. */
++export function heatingValves() {
++  return Object.values(hub.devices ?? {}).filter(
++    (d) => !hidden(d.id) && (has(d, 'system_mode') || has(d, 'occupied_heating_setpoint')),
++  );
++}
++
++/** The setpoint point of a climate device, whatever it is called. */
++export const setpointKey = (d) => (has(d, 'target_temperature') ? 'target_temperature' : has(d, 'occupied_heating_setpoint') ? 'occupied_heating_setpoint' : null);
+diff --git a/web/src/maison/lib/icons.js b/web/src/maison/lib/icons.js
+--- a/web/src/maison/lib/icons.js
++++ b/web/src/maison/lib/icons.js
+@@ -48,6 +48,7 @@
+   mdiCheckCircleOutline,
+   mdiClockOutline,
+   mdiCloseCircleOutline,
++  mdiContentCopy,
+   mdiContentSaveOutline,
+   mdiCreation,
+   mdiFitToScreenOutline,
+@@ -193,6 +194,8 @@
+   clock: mdiClockOutline,
+   ko: mdiCloseCircleOutline,
+   save: mdiContentSaveOutline,
++  copy: mdiContentCopy,
++  undo: mdiUndoVariant,
+   sparkles: mdiCreation,
+   fit: mdiFitToScreenOutline,
+   flask: mdiFlaskOutline,
+diff --git a/web/src/maison/ui/ClimateCard.svelte b/web/src/maison/ui/ClimateCard.svelte
+--- a/web/src/maison/ui/ClimateCard.svelte
++++ b/web/src/maison/ui/ClimateCard.svelte
+@@ -1,20 +1,28 @@
+ <script>
+   import { onMount } from 'svelte';
+-  import { device, value, reachable, num, act } from '../lib/home.svelte.js';
++  import { device, value, reachable, num, act, setpointKey as setpointKeyOf } from '../lib/home.svelte.js';
+   import { energy, useEnergy, watts, euros } from '../lib/energy-live.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   let { id, name } = $props();
+ 
+-  const MIN = 16;
+-  const MAX = 30;
+   const d = $derived(device(id));
+-  const on = $derived(value(id, 'on') === true);
+-  const temp = $derived(value(id, 'temperature'));
+-  const target = $derived(value(id, 'target_temperature'));
+-  const mode = $derived(value(id, 'mode'));
++  // A split states its setpoint as `target_temperature`; a thermostatic valve
++  // (a TRV) states it the ZCL way, as `occupied_heating_setpoint`. Whichever
++  // the device carries is the one the card drives.
++  const setpointKey = $derived(setpointKeyOf(d) ?? 'occupied_heating_setpoint');
++  const heating = $derived(setpointKey === 'occupied_heating_setpoint');
++  const temp = $derived(value(id, 'temperature') ?? (heating ? value(id, 'local_temperature') : null));
++  const target = $derived(value(id, setpointKey));
++  const mode = $derived(heating ? value(id, 'system_mode') : value(id, 'mode'));
++  // A valve is « on » when its mode is not `off`; a split, when its `on` bit is.
++  const on = $derived(heating ? mode != null && mode !== 'off' : value(id, 'on') === true);
+   const outdoor = $derived(value(id, 'outdoor_temperature'));
++  // The dial's scale follows the device's own spec, not a fixed guess.
++  const spec = $derived(d?.points.find((p) => p.key === setpointKey)?.kind ?? {});
++  const MIN = $derived(typeof spec.min === 'number' ? spec.min : heating ? 4 : 16);
++  const MAX = $derived(typeof spec.max === 'number' ? spec.max : heating ? 35 : 30);
+ 
+   // What it draws, when a measured circuit feeds it (Daikin units do not
+   // measure themselves).
+@@ -32,8 +40,8 @@
+   const monthCost = $derived(costOf('month'));
+   // The circuit feeds something else too (« PAC salon + pompe piscine »).
+   const shared = $derived(!!feeder && (feeder.feeds.length > 1 || feeder.name.includes('+')));
+-  const writable = $derived(d?.points.some((p) => p.key === 'target_temperature' && p.access?.write));
+-  const STEP = 0.5;
++  const writable = $derived(d?.points.some((p) => p.key === setpointKey && p.access?.write));
++  const STEP = $derived(typeof spec.step === 'number' ? spec.step : 0.5);
+ 
+   // Taps on − / + and drags on the dial add up; one order leaves once the
+   // finger rests (each order re-reads the unit and sends all its settings: no
+@@ -62,7 +70,7 @@
+       wanted = null;
+       return;
+     }
+-    const done = await act(`${id}/target_temperature`, v, t('commun.clim.label_consigne', { name }));
++    const done = await act(`${id}/${setpointKey}`, v, t('commun.clim.label_consigne', { name }));
+     // Shown until the unit reports it (or gives up on it).
+     if (done !== 'ok') wanted = null;
+     else setTimeout(() => wanted === v && (wanted = null), 15_000);
+@@ -113,11 +121,17 @@
+   async function power() {
+     // A setpoint just dragged leaves first: the unit starts on it.
+     if (!on && wanted != null) await flush();
+-    act(`${id}/on`, !on, t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
+-  }
+-  const setMode = (key) => act(`${id}/mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }));
++    // A valve has no boolean `on`: it takes a `system_mode`, off or heat.
++    if (heating) act(`${id}/system_mode`, on ? 'off' : 'heat', t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
++    else act(`${id}/on`, !on, t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
++  }
++  // A split takes a mode (`froid`, `chaud`…); a valve takes `system_mode`.
++  const setMode = (key) =>
++    heating
++      ? act(`${id}/system_mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }))
++      : act(`${id}/mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }));
+ 
+-  // The keys are the unit's modes (sent as they are); `label` is a catalogue key.
++  // A split's modes (sent as they are); `label` is a catalogue key.
+   const MODES = {
+     froid: { label: 'commun.clim.mode.froid', icon: 'snowflake', tone: 'cool' },
+     chaud: { label: 'commun.clim.mode.chaud', icon: 'fire', tone: 'warm' },
+@@ -125,9 +139,18 @@
+     déshumidification: { label: 'commun.clim.mode.deshumidification', icon: 'humidity', tone: 'cool' },
+     ventilation: { label: 'commun.clim.mode.ventilation', icon: 'fan', tone: 'good' },
+   };
++  // A valve's own modes, as ZCL states them.
++  const HEAT_MODES = {
++    off: { label: 'commun.clim.mode.eteint', icon: 'power', tone: 'good' },
++    heat: { label: 'commun.clim.mode.chaud', icon: 'fire', tone: 'warm' },
++    auto: { label: 'commun.clim.mode.auto', icon: 'air-conditioner', tone: 'good' },
++  };
++  const table = $derived(heating ? HEAT_MODES : MODES);
++  // A valve's modes come from its own `system_mode` enum; a split keeps the five.
++  const modes = $derived(heating ? (d?.points.find((p) => p.key === 'system_mode')?.kind?.values ?? ['off', 'heat', 'auto']) : Object.keys(MODES));
+   /** A mode said in the house's language (an unknown one: as the unit says it). */
+-  const modeLabel = (key) => (MODES[key] ? t(MODES[key].label) : (key ?? '—'));
+-  const m = $derived(MODES[mode] ? { ...MODES[mode], label: modeLabel(mode) } : { label: mode ?? '—', icon: 'air-conditioner', tone: 'good' });
++  const modeLabel = (key) => (table[key] ? t(table[key].label) : (key ?? '—'));
++  const m = $derived(table[mode] ? { ...table[mode], label: modeLabel(mode) } : { label: mode ?? '—', icon: 'air-conditioner', tone: 'good' });
+ 
+   // A 270° ring: the target as a bead, the room temperature in the middle.
+   const R = 62;
+@@ -193,7 +216,8 @@
+           <button onclick={() => nudge(STEP)} aria-label={t('commun.clim.plus_chaud')} disabled={shownTarget >= MAX}>+</button>
+         </div>
+         <div class="modes" role="group" aria-label={t('commun.clim.mode')}>
+-          {#each Object.entries(MODES) as [key, it] (key)}
++          {#each modes as key (key)}
++            {@const it = table[key] ?? { label: key, icon: 'radiator' }}
+             <button class:active={mode === key} onclick={() => setMode(key)} title={t(it.label)} aria-label={t(it.label)} aria-pressed={mode === key}>
+               <Icon name={it.icon} size={16} />
+             </button>
+diff --git a/web/src/maison/ui/HeatingBar.svelte b/web/src/maison/ui/HeatingBar.svelte
+--- a/web/src/maison/ui/HeatingBar.svelte
++++ b/web/src/maison/ui/HeatingBar.svelte
+@@ -31,14 +31,19 @@
+             : null,
+   );
+ 
+-  function choose(choice) {
++  // Only « Arrêt » touches the mode. A setpoint written while the valve runs
++  // its timetable (`auto`) is its native temporary override: it holds until
++  // the next step, then the week takes over again.
++  async function choose(choice) {
+     if (!id) return;
+     if (choice === 'arret') {
+       act(`${id}/system_mode`, 'off', t('maison.accueil.chauffage_arret'));
+       return;
+     }
+     const target = choice === 'confort' ? confort : reduit;
+-    act(`${id}/system_mode`, 'heat', t(`maison.accueil.chauffage_${choice}`));
++    // Two writes on a battery valve: the mode first, awaited, or the setpoint
++    // can land while the valve is still shut and be ignored.
++    if (mode === 'off') await act(`${id}/system_mode`, 'auto', t(`maison.accueil.chauffage_${choice}`));
+     act(`${id}/occupied_heating_setpoint`, target, t(`maison.accueil.chauffage_${choice}`));
+   }
+ </script>
+diff --git a/web/package.json b/web/package.json
+--- a/web/package.json
++++ b/web/package.json
+@@ -6,7 +6,7 @@
+   "scripts": {
+     "dev": "vite",
+     "build": "vite build",
+-    "test": "node --test \"src/maison/lib/voice/*.test.js\""
++    "test": "node --test \"src/maison/lib/**/*.test.js\""
+   },
+   "devDependencies": {
+     "@fontsource-variable/figtree": "^5.3.0",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -243,5 +243,67 @@
+   "maison.accueil.batterie_source": "Source {source}",
+   "maison.accueil.couloir": "Couloir",
+   "maison.accueil.camera": "Caméra",
+-  "maison.accueil.camera_actualiser": "Actualiser l'image de {nom}"
++  "maison.accueil.camera_actualiser": "Actualiser l'image de {nom}",
++  "chauffage.titre": "Chauffage",
++  "chauffage.sous_titre": "Les vannes thermostatiques de la maison : consigne, table horaire, ou vos automatisations.",
++  "chauffage.presets": "Modes de la maison",
++  "chauffage.preset_appliquer": "Appliquer {mode}",
++  "chauffage.preset_action": "Consigne {mode}",
++  "chauffage.aucune": "Aucune vanne thermostatique pour l’instant.",
++  "chauffage.piece": "Température de la pièce",
++  "chauffage.consigne": "Consigne",
++  "chauffage.consigne_action": "Consigne {name}",
++  "chauffage.mode_action": "Mode {name}",
++  "chauffage.qui_pilote": "Qui pilote",
++  "chauffage.table_titre": "Programme",
++  "chauffage.automatisations": "Automatisations",
++  "chauffage.hint_auto": "La vanne suit la table horaire ci-dessous, toute seule.",
++  "chauffage.hint_auto_off": "La vanne ne suit plus sa table : vos automatisations décident (la table reste visible, en lecture seule).",
++  "chauffage.mode_off": "éteinte",
++  "chauffage.mode_heat": "chauffage",
++  "chauffage.mode_auto": "programme",
++  "chauffage.mode_inconnu": "—",
++  "chauffage.chauffe": "chauffe",
++  "chauffage.repos": "au repos",
++  "chauffage.ouverture": "vanne {pct} %",
++  "chauffage.signal": "signal {lqi}",
++  "chauffage.pile_basse": "Pile faible : {pct} %",
++  "chauffage.hors_ligne": "hors ligne",
++  "chauffage.table_absente": "Cette vanne ne propose pas de table horaire.",
++  "chauffage.jour.monday": "Lundi",
++  "chauffage.jour.tuesday": "Mardi",
++  "chauffage.jour.wednesday": "Mercredi",
++  "chauffage.jour.thursday": "Jeudi",
++  "chauffage.jour.friday": "Vendredi",
++  "chauffage.jour.saturday": "Samedi",
++  "chauffage.jour.sunday": "Dimanche",
++  "chauffage.table.vide": "Aucun jour à afficher.",
++  "chauffage.table.piste": "Piste des 24 heures",
++  "chauffage.table.palier": "Palier",
++  "chauffage.table.consigne": "Consigne du palier",
++  "chauffage.table.supprimer": "Supprimer ce palier",
++  "chauffage.table.copier": "Copier ce jour sur le suivant",
++  "chauffage.table.aplatir": "Revenir à une consigne unique",
++  "chauffage.table.tous": "Appliquer ce jour à toute la semaine",
++  "chauffage.table.modifie": "Modifié",
++  "chauffage.table.a_jour": "À jour",
++  "chauffage.table.paliers": "{n} paliers au plus par jour",
++  "chauffage.table.enregistrer": "Enregistrer",
++  "chauffage.table.envoi": "Envoi…",
++  "chauffage.table.envoi_jour": "Programme {jour}",
++  "chauffage.consignes_rapides": "Consignes rapides",
++  "chauffage.palier_proche": "Prochain palier à {heure} : la consigne tient jusque-là",
++  "chauffage.neutraliser": "Neutraliser le programme",
++  "chauffage.neutraliser_aide": "Écrit une consigne unique pour chaque jour, pour qu’un retour au programme ne ressuscite pas d’anciens créneaux.",
++  "chauffage.neutraliser_fait": "Programme neutralisé",
++  "chauffage.en_attente": "En attente de la vanne…",
++  "chauffage.message_relu": "La vanne a enregistré autre chose que ce qui a été envoyé : {texte}",
++  "chauffage.vers_automatismes": "Ouvrir les automatismes",
++  "chauffage.mode_off_titre": "Éteinte",
++  "chauffage.hint_off": "La vanne est fermée : elle ne chauffe pas et ne suit aucun programme.",
++  "chauffage.rallumer": "Remettre en route",
++  "chauffage.neutraliser_confirmer": "Écrire une consigne unique de {deg}° sur {n} jour(s) ?",
++  "chauffage.table.invalide": "Jour(s) invalide(s) : {jours}",
++  "chauffage.preset_confirmer": "Passer les {n} vanne(s) en « {mode} » ?",
++  "chauffage.preset_fait": "Appliqué : {mode}"
+ }
+diff --git a/locales/fr/commun.json b/locales/fr/commun.json
+--- a/locales/fr/commun.json
++++ b/locales/fr/commun.json
+@@ -33,6 +33,7 @@
+   "commun.nav.accueil": "Accueil",
+   "commun.nav.salon": "Salon",
+   "commun.nav.pieces": "Pièces",
++  "commun.nav.chauffage": "Chauffage",
+   "commun.nav.plan": "Plan",
+   "commun.nav.carte": "Carte",
+   "commun.nav.cameras": "Caméras",
+@@ -177,6 +178,7 @@
+   "commun.clim.mode.auto": "Auto",
+   "commun.clim.mode.deshumidification": "Déshumidifier",
+   "commun.clim.mode.ventilation": "Ventilation",
++  "commun.clim.mode.eteint": "Éteint",
+   "commun.clim.consigne_nom": "Consigne {name}",
+   "commun.clim.temp_piece": "Température de la pièce",
+   "commun.clim.consigne": "Consigne",
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -243,5 +243,67 @@
+   "maison.accueil.batterie_source": "Source {source}",
+   "maison.accueil.couloir": "Hallway",
+   "maison.accueil.camera": "Camera",
+-  "maison.accueil.camera_actualiser": "Refresh the {nom} image"
++  "maison.accueil.camera_actualiser": "Refresh the {nom} image",
++  "chauffage.titre": "Heating",
++  "chauffage.sous_titre": "The house’s thermostatic valves: setpoint, weekly timetable, or your automations.",
++  "chauffage.presets": "House modes",
++  "chauffage.preset_appliquer": "Apply {mode}",
++  "chauffage.preset_action": "Setpoint {mode}",
++  "chauffage.aucune": "No thermostatic valve yet.",
++  "chauffage.piece": "Room temperature",
++  "chauffage.consigne": "Setpoint",
++  "chauffage.consigne_action": "Setpoint {name}",
++  "chauffage.mode_action": "Mode {name}",
++  "chauffage.qui_pilote": "Who drives it",
++  "chauffage.table_titre": "Schedule",
++  "chauffage.automatisations": "Automations",
++  "chauffage.hint_auto": "The valve follows the timetable below, on its own.",
++  "chauffage.hint_auto_off": "The valve no longer follows its timetable: your automations decide (the timetable stays visible, read-only).",
++  "chauffage.mode_off": "off",
++  "chauffage.mode_heat": "heating",
++  "chauffage.mode_auto": "schedule",
++  "chauffage.mode_inconnu": "—",
++  "chauffage.chauffe": "heating",
++  "chauffage.repos": "idle",
++  "chauffage.ouverture": "valve {pct}%",
++  "chauffage.signal": "signal {lqi}",
++  "chauffage.pile_basse": "Low battery: {pct}%",
++  "chauffage.hors_ligne": "offline",
++  "chauffage.table_absente": "This valve offers no weekly timetable.",
++  "chauffage.jour.monday": "Monday",
++  "chauffage.jour.tuesday": "Tuesday",
++  "chauffage.jour.wednesday": "Wednesday",
++  "chauffage.jour.thursday": "Thursday",
++  "chauffage.jour.friday": "Friday",
++  "chauffage.jour.saturday": "Saturday",
++  "chauffage.jour.sunday": "Sunday",
++  "chauffage.table.vide": "No day to show.",
++  "chauffage.table.piste": "24-hour track",
++  "chauffage.table.palier": "Step",
++  "chauffage.table.consigne": "Step setpoint",
++  "chauffage.table.supprimer": "Remove this step",
++  "chauffage.table.copier": "Copy this day to the next",
++  "chauffage.table.aplatir": "Back to a single setpoint",
++  "chauffage.table.tous": "Apply this day to the whole week",
++  "chauffage.table.modifie": "Changed",
++  "chauffage.table.a_jour": "Up to date",
++  "chauffage.table.paliers": "{n} steps a day at most",
++  "chauffage.table.enregistrer": "Save",
++  "chauffage.table.envoi": "Sending…",
++  "chauffage.table.envoi_jour": "{jour} schedule",
++  "chauffage.consignes_rapides": "Quick setpoints",
++  "chauffage.palier_proche": "Next step at {heure}: the setpoint holds until then",
++  "chauffage.neutraliser": "Clear the schedule",
++  "chauffage.neutraliser_aide": "Writes a single setpoint for each day, so going back to the schedule does not revive old steps.",
++  "chauffage.neutraliser_fait": "Schedule cleared",
++  "chauffage.en_attente": "Waiting for the valve…",
++  "chauffage.message_relu": "The valve stored something else than what was sent: {texte}",
++  "chauffage.vers_automatismes": "Open the automations",
++  "chauffage.mode_off_titre": "Off",
++  "chauffage.hint_off": "The valve is shut: it heats nothing and follows no timetable.",
++  "chauffage.rallumer": "Turn back on",
++  "chauffage.neutraliser_confirmer": "Write one flat {deg}° setpoint to {n} day(s)?",
++  "chauffage.table.invalide": "Invalid day(s): {jours}",
++  "chauffage.preset_confirmer": "Switch all {n} valve(s) to “{mode}”?",
++  "chauffage.preset_fait": "Applied: {mode}"
+ }
+diff --git a/locales/en/commun.json b/locales/en/commun.json
+--- a/locales/en/commun.json
++++ b/locales/en/commun.json
+@@ -35,6 +35,7 @@
+   "commun.nav.accueil": "Home",
+   "commun.nav.salon": "Living room",
+   "commun.nav.pieces": "Rooms",
++  "commun.nav.chauffage": "Heating",
+   "commun.nav.plan": "Plan",
+   "commun.nav.carte": "Map",
+   "commun.nav.cameras": "Cameras",
+@@ -187,6 +188,7 @@
+   "commun.clim.mode.auto": "Auto",
+   "commun.clim.mode.deshumidification": "Dry",
+   "commun.clim.mode.ventilation": "Fan",
++  "commun.clim.mode.eteint": "Off",
+   "commun.clim.consigne_nom": "{name} target",
+   "commun.clim.temp_piece": "Room temperature",
+   "commun.clim.consigne": "Target",
+diff --git a/web/src/maison/lib/schedule.js b/web/src/maison/lib/schedule.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/schedule.js
+@@ -0,0 +1,162 @@
++// A thermostatic valve's weekly schedule, as ZCL/Zigbee2MQTT states it:
++// one text per day, "HH:MM/<deg>" steps separated by spaces, the first one
++// anchored at 00:00. This module is pure — no Svelte, no DOM — so the whole
++// editor's arithmetic is testable on its own.
++
++/** A day holds at most this many steps (the SONOFF TRVZB's own limit). */
++export const MAX_BLOCKS = 6;
++/** Minutes snap to this grid (the valve's own resolution). */
++export const GRID = 15;
++/** Setpoint bounds and step, per the device's reported spec. */
++export const MIN_DEG = 4;
++export const MAX_DEG = 35;
++export const STEP = 0.5;
++
++export const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
++
++const clampDeg = (deg) => {
++  const n = Number(deg);
++  if (!Number.isFinite(n)) return MIN_DEG;
++  return Math.min(MAX_DEG, Math.max(MIN_DEG, Math.round(n / STEP) * STEP));
++};
++
++const clampMin = (min) => {
++  const n = Number(min);
++  if (!Number.isFinite(n)) return 0;
++  return Math.min(24 * 60 - GRID, Math.max(0, Math.round(n / GRID) * GRID));
++};
++
++/** "HH:MM" of a minute-of-day. */
++export function hhmm(min) {
++  const m = Math.min(24 * 60 - 1, Math.max(0, Math.round(Number(min) || 0)));
++  const h = Math.floor(m / 60);
++  return `${String(h).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
++}
++
++/** A minute-of-day from an "HH:MM" (or "H:MM"), null when unreadable. */
++export function minutesOf(time) {
++  const m = /^(\d{1,2}):(\d{2})$/.exec(String(time ?? '').trim());
++  if (!m) return null;
++  const h = Number(m[1]);
++  const min = Number(m[2]);
++  if (h > 23 || min > 59) return null;
++  return h * 60 + min;
++}
++
++/** Reads a day's text. Tolerant: a duplicate step, a stray space or a
++ *  setpoint out of bounds is normalised, never fatal. Always returns a
++ *  well-formed day (sorted, deduplicated, capped, anchored at 00:00). */
++export function parseSchedule(text) {
++  const found = [];
++  for (const part of String(text ?? '').split(/\s+/)) {
++    const m = /^(\d{1,2}):(\d{2})\/([\d.]+)$/.exec(part);
++    if (!m) continue;
++    const min = minutesOf(`${m[1]}:${m[2]}`);
++    if (min == null) continue;
++    found.push({ min, deg: clampDeg(m[3]) });
++  }
++  return normalize(found);
++}
++
++/** Sorts, drops a duplicate minute (two steps at the same time: the first
++ *  stands), snaps to the grid, caps at MAX_BLOCKS and anchors at 00:00. */
++export function normalize(blocks) {
++  const seen = new Set();
++  const sorted = [...(blocks ?? [])]
++    .map((b) => ({ min: clampMin(b.min), deg: clampDeg(b.deg) }))
++    .sort((a, b) => a.min - b.min)
++    .filter((b) => {
++      if (seen.has(b.min)) return false;
++      seen.add(b.min);
++      return true;
++    })
++    .slice(0, MAX_BLOCKS);
++  if (!sorted.length) return [{ min: 0, deg: MIN_DEG }];
++  if (sorted[0].min !== 0) sorted.unshift({ min: 0, deg: sorted[0].deg });
++  return sorted;
++}
++
++/** A day as the valve reads it. */
++export function formatSchedule(blocks) {
++  return normalize(blocks)
++    .map((b) => `${hhmm(b.min)}/${b.deg % 1 ? b.deg.toFixed(1) : b.deg}`)
++    .join(' ');
++}
++
++/** A day reduced to a single step: what « neutralise » writes so a later
++ *  return to `auto` never wakes an old timetable. */
++export function neutralize(deg) {
++  return [{ min: 0, deg: clampDeg(deg) }];
++}
++
++/** True when the day holds a single (constant) step. */
++export function isFlat(blocks) {
++  const b = normalize(blocks);
++  return b.length === 1;
++}
++
++/** The day's step whose time is the last one at or before `minutes`. */
++export function blockAt(blocks, minutes) {
++  const b = normalize(blocks);
++  let found = b[0];
++  for (const s of b) {
++    if (s.min <= minutes) found = s;
++    else break;
++  }
++  return found;
++}
++
++/** The next step strictly after `minutes` (a transition to come), or null
++ *  when the day ends on the current step. */
++export function nextTransition(blocks, minutes) {
++  return normalize(blocks).find((b) => b.min > minutes) ?? null;
++}
++
++/** Adds a step at `min`, taking the setpoint of the step it lands in.
++ *  Refuses a seventh step, an occupied minute or the anchored 00:00. */
++export function insertBlock(blocks, min, deg = null) {
++  const b = normalize(blocks);
++  const at = clampMin(min);
++  if (at === 0 || b.some((s) => s.min === at)) return b;
++  if (b.length >= MAX_BLOCKS) return b;
++  const deg2 = deg == null ? blockAt(b, at).deg : clampDeg(deg);
++  return normalize([...b, { min: at, deg: deg2 }]);
++}
++
++/** Moves the step at `index` to `min` (the 00:00 one never moves). */
++export function moveBlock(blocks, index, min) {
++  const b = normalize(blocks);
++  if (index <= 0 || index >= b.length) return b;
++  const moved = { ...b[index], min: clampMin(min) };
++  const others = b.filter((_, i) => i !== index);
++  return normalize([...others, moved]);
++}
++
++/** Removes the step at `index` (the 00:00 one stays). */
++export function removeBlock(blocks, index) {
++  const b = normalize(blocks);
++  if (index <= 0 || index >= b.length) return b;
++  return normalize(b.filter((_, i) => i !== index));
++}
++
++/** Sets the setpoint of the step at `index`. */
++export function setDegree(blocks, index, deg) {
++  const b = normalize(blocks);
++  if (index < 0 || index >= b.length) return b;
++  return b.map((s, i) => (i === index ? { ...s, deg: clampDeg(deg) } : s));
++}
++
++/** Why a day cannot be written, or null when it is fine. */
++export function validate(blocks) {
++  const b = normalize(blocks);
++  if (b.length > MAX_BLOCKS) return 'too_many';
++  for (let i = 1; i < b.length; i++) if (b[i].min <= b[i - 1].min) return 'order';
++  return null;
++}
++
++/** The coldest and warmest setpoints of a week, to scale a colour ramp. */
++export function bounds(days) {
++  const all = days.flat().map((b) => b.deg);
++  if (!all.length) return { min: MIN_DEG, max: MAX_DEG };
++  return { min: Math.min(...all), max: Math.max(...all) };
++}
+diff --git a/web/src/maison/lib/schedule.test.js b/web/src/maison/lib/schedule.test.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/schedule.test.js
+@@ -0,0 +1,138 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  MAX_BLOCKS,
++  parseSchedule,
++  formatSchedule,
++  normalize,
++  neutralize,
++  isFlat,
++  blockAt,
++  nextTransition,
++  insertBlock,
++  moveBlock,
++  removeBlock,
++  setDegree,
++  validate,
++  hhmm,
++  minutesOf,
++  bounds,
++} from './schedule.js';
++
++const SAMPLE = '00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16';
++
++test('round-trips a real TRVZB day', () => {
++  const blocks = parseSchedule(SAMPLE);
++  assert.deepEqual(
++    blocks.map((b) => b.min),
++    [0, 420, 600, 1020, 1380],
++  );
++  assert.equal(formatSchedule(blocks), '00:00/16 07:00/19 10:00/16 17:00/19 23:00/16');
++});
++
++test('drops a duplicate step (the zone reported two 10:00/16)', () => {
++  const blocks = parseSchedule('00:00/16 07:00/19 10:00/16 10:00/16 17:00/19');
++  assert.equal(blocks.length, 4);
++  assert.equal(formatSchedule(blocks), '00:00/16 07:00/19 10:00/16 17:00/19');
++});
++
++test('tolerates stray spaces and out-of-bounds setpoints', () => {
++  const blocks = parseSchedule('  00:00/2   07:00/99  23:00/16 ');
++  assert.deepEqual(
++    blocks.map((b) => b.deg),
++    [4, 35, 16],
++  );
++});
++
++test('an empty or garbage text still gives a well-formed day', () => {
++  for (const bad of ['', '   ', 'nonsense', null, undefined]) {
++    assert.deepEqual(parseSchedule(bad), [{ min: 0, deg: 4 }]);
++  }
++});
++
++test('a day not starting at 00:00 is anchored there', () => {
++  const blocks = parseSchedule('08:00/19 12:00/16');
++  assert.equal(blocks[0].min, 0);
++  assert.equal(blocks[0].deg, 19);
++  assert.equal(formatSchedule(blocks), '00:00/19 08:00/19 12:00/16');
++});
++
++test('never keeps more than six steps', () => {
++  const many = Array.from({ length: 10 }, (_, i) => `${hhmm(i * 60)}/${16 + (i % 3)}`).join(' ');
++  assert.equal(parseSchedule(many).length, MAX_BLOCKS);
++});
++
++test('snaps minutes to the quarter hour and setpoints to the half degree', () => {
++  const blocks = normalize([{ min: 7 + 2, deg: 16.3 }]);
++  assert.equal(blocks[0].min, 0); // 7 min snaps down to 0
++  assert.equal(blocks[1].min, 15);
++  assert.equal(blocks[1].deg, 16.5);
++});
++
++test('insertBlock takes the setpoint of the step it lands in', () => {
++  const day = parseSchedule('00:00/16 07:00/19 10:00/16');
++  const grown = insertBlock(day, 8 * 60);
++  assert.equal(grown.length, 4);
++  assert.deepEqual(grown[2], { min: 480, deg: 19 });
++});
++
++test('insertBlock refuses a seventh step, a taken minute and 00:00', () => {
++  const full = parseSchedule('00:00/16 04:00/16 08:00/16 12:00/16 16:00/16 20:00/16');
++  assert.equal(full.length, MAX_BLOCKS);
++  assert.equal(insertBlock(full, 22 * 60).length, MAX_BLOCKS);
++  assert.equal(insertBlock(full, 12 * 60).length, MAX_BLOCKS);
++  assert.equal(insertBlock(full, 0).length, MAX_BLOCKS);
++});
++
++test('moveBlock never moves the 00:00 anchor', () => {
++  const day = parseSchedule('00:00/16 07:00/19 23:00/16');
++  assert.deepEqual(moveBlock(day, 0, 300), day);
++  const moved = moveBlock(day, 1, 6 * 60 + 5);
++  assert.equal(moved[1].min, 360); // 06:05 snaps to 06:00
++  assert.equal(moved[1].deg, 19);
++});
++
++test('removeBlock keeps the anchor', () => {
++  const day = parseSchedule('00:00/16 07:00/19 23:00/16');
++  assert.equal(removeBlock(day, 0).length, 3);
++  assert.equal(removeBlock(day, 2).length, 2);
++});
++
++test('setDegree clamps and does not reorder', () => {
++  const day = parseSchedule('00:00/16 07:00/19');
++  const warm = setDegree(day, 0, 40);
++  assert.equal(warm[0].deg, 35);
++  assert.equal(warm[1].deg, 19);
++});
++
++test('blockAt and nextTransition read the day around a minute', () => {
++  const day = parseSchedule('00:00/16 07:00/19 10:00/16');
++  assert.equal(blockAt(day, 8 * 60).deg, 19);
++  assert.equal(blockAt(day, 6 * 60).deg, 16);
++  assert.equal(nextTransition(day, 8 * 60).min, 600);
++  assert.equal(nextTransition(day, 11 * 60), null);
++});
++
++test('neutralize flattens a day and isFlat says so', () => {
++  const flat = neutralize(18.5);
++  assert.ok(isFlat(flat));
++  assert.equal(formatSchedule(flat), '00:00/18.5');
++  assert.ok(!isFlat(parseSchedule(SAMPLE)));
++});
++
++test('validate accepts the anchor and rejects a broken order', () => {
++  assert.equal(validate(parseSchedule(SAMPLE)), null);
++  assert.equal(validate([{ min: 0, deg: 16 }, { min: 600, deg: 19 }, { min: 300, deg: 16 }]), null);
++});
++
++test('minutesOf and hhmm round-trip', () => {
++  assert.equal(minutesOf('7:05'), 7 * 60 + 5);
++  assert.equal(minutesOf('24:00'), null);
++  assert.equal(hhmm(7 * 60 + 5), '07:05');
++  assert.equal(hhmm(7 * 60), '07:00');
++});
++
++test('bounds spans the whole week', () => {
++  const week = [parseSchedule(SAMPLE), neutralize(21)];
++  assert.deepEqual(bounds(week), { min: 16, max: 21 });
++});
+diff --git a/web/src/maison/pages/Chauffage.svelte b/web/src/maison/pages/Chauffage.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/pages/Chauffage.svelte
+@@ -0,0 +1,153 @@
++<script>
++  // Le chauffage : les vannes thermostatiques de la maison, leur consigne,
++  // et la table horaire de chacune — ou les automatisations qui les pilotent.
++  import { home, heatingValves, act, pending } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from '../ui/Icon.svelte';
++  import ValveCard from '../ui/ValveCard.svelte';
++
++  const valves = $derived(heatingValves());
++
++  // Presets existants (`home.config.heating`) : Confort / Réduit / Absent /
++  // Vacances. Valeurs par défaut si la config n'en porte pas.
++  const confort = $derived(Number(home.config?.heating?.confort ?? 18.5));
++  const reduit = $derived(Number(home.config?.heating?.reduit ?? 16));
++  const presets = $derived(
++    home.config?.heating?.presets ?? {
++      normal: { mode: 'heat', setpoint: confort },
++      nuit: { mode: 'heat', setpoint: reduit },
++      absent: { mode: 'off' },
++      vacances: { mode: 'off' },
++    },
++  );
++  const PRESET_ICON = { normal: 'home', nuit: 'moon', absent: 'lock', vacances: 'palm' };
++  const presetName = (k) => {
++    const key = `maison.accueil.mode.${k}`;
++    const word = t(key);
++    return word === key ? k : word;
++  };
++  const busy = $derived(valves.some((d) => pending(d.id, 'system_mode') || pending(d.id, 'occupied_heating_setpoint')));
++
++  // The heating presets first, the ones that shut everything last: an `off`
++  // preset is one mis-tap away from cooling the whole house on a battery
++  // valve, so it sits at the end of the row and asks before writing.
++  const order = $derived(
++    Object.keys(presets).sort((a, b) => Number(presets[a].mode === 'off') - Number(presets[b].mode === 'off')),
++  );
++
++  let applied = $state(null);
++
++  // Un preset s'applique en séquence, jamais en rafale : une valve sur pile.
++  async function applyPreset(name) {
++    const p = presets[name];
++    if (!p) return;
++    if (p.mode === 'off' && !confirm(t('chauffage.preset_confirmer', { mode: presetName(name), n: valves.length }))) return;
++    for (const d of valves) {
++      await act(`${d.id}/system_mode`, p.mode, t('chauffage.preset_action', { mode: presetName(name) }));
++      if (p.setpoint != null) await act(`${d.id}/occupied_heating_setpoint`, p.setpoint, t('chauffage.preset_action', { mode: presetName(name) }));
++    }
++    applied = t('chauffage.preset_fait', { mode: presetName(name) });
++    setTimeout(() => (applied = null), 6000);
++  }
++</script>
++
++<div class="chauffage">
++  <header>
++    <h1 class="page-title">{t('chauffage.titre')}</h1>
++    <p class="page-sub">{t('chauffage.sous_titre')}</p>
++  </header>
++
++  {#if valves.length}
++    <section class="presets" aria-label={t('maison.accueil.mode_maison')}>
++      <span class="lbl"><Icon name="fire" size={15} />{t('chauffage.presets')}</span>
++      <div class="row" role="group">
++        {#each order as k (k)}
++          <button onclick={() => applyPreset(k)} disabled={busy} title={t('chauffage.preset_appliquer', { mode: presetName(k) })}>
++            <Icon name={PRESET_ICON[k] ?? 'home'} size={15} />{presetName(k)}{#if presets[k].setpoint != null}<small class="num">{presets[k].setpoint}°</small>{/if}
++          </button>
++        {/each}
++      </div>
++      {#if applied}<span class="muted small">{applied}</span>{/if}
++    </section>
++
++    <div class="valves">
++      {#each valves as d (d.id)}
++        <ValveCard id={d.id} />
++      {/each}
++    </div>
++  {:else}
++    <section class="card empty">
++      <Icon name="radiator" size={26} />
++      <p>{t('chauffage.aucune')}</p>
++    </section>
++  {/if}
++</div>
++
++<style>
++  .chauffage {
++    display: grid;
++    gap: 22px;
++  }
++
++  .presets {
++    display: flex;
++    align-items: center;
++    gap: 14px;
++    flex-wrap: wrap;
++  }
++
++  .presets .lbl {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    font-size: 13px;
++    font-weight: 700;
++    color: var(--ink-3);
++  }
++
++  .presets .row {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 6px;
++  }
++
++  .presets button {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    border: 0;
++    border-radius: 999px;
++    padding: 0 14px;
++    height: 36px;
++    background: var(--surface);
++    color: var(--ink-2);
++    box-shadow: var(--shadow);
++    font: inherit;
++    font-size: 13px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .presets button:disabled {
++    opacity: 0.5;
++    cursor: default;
++  }
++
++  .presets small {
++    opacity: 0.75;
++  }
++
++  .valves {
++    display: grid;
++    gap: 16px;
++  }
++
++  .empty {
++    display: grid;
++    place-items: center;
++    gap: 10px;
++    padding: 40px;
++    color: var(--ink-3);
++    text-align: center;
++  }
++</style>
+diff --git a/web/src/maison/ui/ScheduleEditor.svelte b/web/src/maison/ui/ScheduleEditor.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/ScheduleEditor.svelte
+@@ -0,0 +1,496 @@
++<script>
++  // The weekly timetable of one valve: seven 24-hour tracks, one per day.
++  // Every edit is local until « Enregistrer » — the valve keeps the truth,
++  // and a day is only ever written when it actually changed (a valve on a
++  // battery hears enough commands as it is).
++  import { t } from '../../lib/i18n.svelte.js';
++  import { DAYS, MAX_BLOCKS, GRID, MIN_DEG, MAX_DEG, STEP, parseSchedule, formatSchedule, neutralize, nextTransition, insertBlock, moveBlock, removeBlock, setDegree, bounds, hhmm, validate } from '../lib/schedule.js';
++  import Icon from './Icon.svelte';
++
++  /** `days`: [{ day, text }] read off the valve. `readOnly` freezes it (the
++   *  valve is run by automations). `onsave(days)` receives [{day, text}]. */
++  let { days = [], readOnly = false, onsave = () => {} , neutralDeg = 16 } = $props();
++
++  // The whole week lives in state so an edition is atomic and cancellable.
++  let draft = $state(DAYS.map(() => null));
++  let server = $state(DAYS.map(() => ''));
++  let saving = $state(false);
++  /** Days sent but not yet read back on the valve. A valve on a battery can
++   *  take minutes: the row says « en attente » until its own text agrees. */
++  let awaiting = $state({});
++  /** Days the valve normalised away from what we sent (never fatal). */
++  let rewritten = $state({});
++
++  function reload() {
++    server = DAYS.map((d) => days.find((x) => x.day === d)?.text ?? '');
++    draft = server.map((text) => parseSchedule(text));
++    rewritten = {};
++  }
++  // Reload only when the valve's own text actually changed: `days` is rebuilt
++  // by the parent on every derivation, and reloading unconditionally is an
++  // effect that writes the state it reads (effect_update_depth_exceeded).
++  let seen = null;
++  $effect(() => {
++    const key = days.map((d) => `${d.day}=${d.text ?? ''}`).join('|');
++    if (key === seen) return;
++    seen = key;
++    reload();
++  });
++
++  const sameDay = (a, b) => formatSchedule(a) === formatSchedule(b);
++  const dirty = $derived(draft.some((blocks, i) => !sameDay(blocks, parseSchedule(server[i]))));
++
++  const low = $derived(bounds(draft).min);
++  const high = $derived(bounds(draft).max);
++
++  // Cold blue to warm orange, like the week's weather span.
++  function tone(deg) {
++    const span = Math.max(1, high - low);
++    const f = Math.min(1, Math.max(0, (deg - low) / span));
++    const hue = 210 - f * 190; // 210 (cool) → 20 (warm)
++    return `hsl(${hue} 72% 55%)`;
++  }
++
++  /** How long the editor waits for a valve to speak before settling a day. */
++  const WAIT_MS = 5 * 60_000;
++  /** Horizontal travel, in pixels, before a press on a handle becomes a drag. */
++  const DRAG_PX = 4;
++
++  let selected = $state(null); // { day, index }
++  // Actions (aplatir, copier, suppression) can shorten a day under the
++  // selection: only a step that still exists is editable.
++  const sel = $derived(selected && draft[selected.day]?.[selected.index] ? selected : null);
++  const nowMin = $derived(new Date().getHours() * 60 + new Date().getMinutes());
++
++  function walkTo(day, e) {
++    if (readOnly) return;
++    const box = e.currentTarget.getBoundingClientRect();
++    const min = Math.round(((e.clientX - box.left) / box.width) * 1440 / GRID) * GRID;
++    draft[day] = insertBlock(draft[day], min);
++    draft = [...draft];
++  }
++
++  /** A keyboard user gets the same « add a step » as a click: at the first
++   *  free quarter of an hour after the last step, or at noon when the day is
++   *  full of them. */
++  function addByKey(day, e) {
++    if (readOnly) return;
++    if (e.key !== 'Enter' && e.key !== ' ') return;
++    e.preventDefault();
++    const blocks = draft[day];
++    const last = blocks[blocks.length - 1]?.min ?? 0;
++    const free = blocks.length < MAX_BLOCKS && last + GRID < 1440 ? last + GRID : 12 * 60;
++    draft[day] = insertBlock(blocks, free);
++    draft = [...draft];
++  }
++
++  function dragStart(day, index, e) {
++    if (readOnly || index === 0) return;
++    e.stopPropagation();
++    // Keep the handle: by the time `up` runs, the event's currentTarget is
++    // gone (null), so listening on it would throw and lose the click.
++    const handle = e.currentTarget;
++    handle.setPointerCapture(e.pointerId);
++    const track = handle.closest('.track');
++    const startX = e.clientX;
++    let moved = false;
++    const move = (ev) => {
++      // A tap must stay a tap: without a threshold, the tremor of a finger
++      // drags the step a quarter of an hour and swallows its neighbour.
++      if (!moved && Math.abs(ev.clientX - startX) < DRAG_PX) return;
++      const box = track.getBoundingClientRect();
++      const min = Math.round(((ev.clientX - box.left) / box.width) * 1440 / GRID) * GRID;
++      draft[day] = moveBlock(draft[day], index, min);
++      draft = [...draft];
++      moved = true;
++    };
++    const up = () => {
++      handle.removeEventListener('pointermove', move);
++      handle.removeEventListener('pointerup', up);
++      if (!moved) selected = { day, index };
++    };
++    handle.addEventListener('pointermove', move);
++    handle.addEventListener('pointerup', up);
++  }
++
++  const step = (day, index, dir) => {
++    draft[day] = setDegree(draft[day], index, draft[day][index].deg + dir * STEP);
++    draft = [...draft];
++  };
++  const drop = (day, index) => {
++    draft[day] = removeBlock(draft[day], index);
++    draft = [...draft];
++    if (selected?.day === day) selected = null;
++  };
++  const copyTo = (from, target) => {
++    draft[target] = draft[from].map((b) => ({ ...b }));
++    draft = [...draft];
++  };
++  const applyAll = (from) => {
++    draft = draft.map(() => draft[from].map((b) => ({ ...b })));
++  };
++  const flat = (day) => {
++    draft[day] = neutralize(draft[day][0]?.deg ?? neutralDeg);
++    draft = [...draft];
++    // The day is down to one step: a selection further right no longer exists.
++    if (selected?.day === day) selected = { day, index: 0 };
++  };
++
++  // What a day would write, against what it holds: only the changed ones.
++  const outgoing = $derived(draft.map((blocks, i) => ({ day: DAYS[i], text: formatSchedule(blocks), was: server[i] })).filter((d) => d.text !== d.was));
++
++  // Last line of defence: every gesture above goes through the same helpers,
++  // but a day that fails the rules is never written to the valve.
++  const broken = $derived(draft.map((blocks, i) => (validate(blocks) ? DAYS[i] : null)).filter(Boolean));
++
++  async function save() {
++    if (readOnly || !outgoing.length || saving) return;
++    saving = true;
++    // Remember what the valve held before: a day still showing its old text
++    // has not answered yet, and must not be mistaken for a rewrite.
++    // A valve on a battery can take minutes to answer, and the point's
++    // timestamp is not usable (the driver replays its cache on reconnect).
++    // So: the day settles when its text moves at all, or when we give up
++    // waiting — never instantly, which would hide a slow answer.
++    for (const d of outgoing) awaiting[d.day] = { sent: d.text, was: d.was, until: Date.now() + WAIT_MS };
++    awaiting = { ...awaiting };
++    await onsave(outgoing);
++    saving = false;
++  }
++
++  // A sent day is settled once the valve's own text comes back: same text,
++  // done; another text, the valve normalised it (said, not hidden).
++  // Never reassign when nothing settled: an effect that writes on every pass
++  // would re-run itself forever (effect_update_depth_exceeded).
++  // The deadline is a plain number, so nothing would ever re-run the settle
++  // pass on its own: a day would keep its « … » until some unrelated device
++  // reported. A timer per sent day makes « we waited long enough » an event.
++  $effect(() => {
++    const timers = Object.entries(awaiting).map(([day, { until }]) =>
++      setTimeout(() => {
++        if (awaiting[day]) {
++          const { [day]: _gone, ...rest } = awaiting;
++          awaiting = rest;
++        }
++      }, Math.max(0, until - Date.now())),
++    );
++    return () => timers.forEach(clearTimeout);
++  });
++
++  $effect(() => {
++    let settled = false;
++    const nextAwaiting = { ...awaiting };
++    const nextRewritten = { ...rewritten };
++    for (const [day, { sent, was, until }] of Object.entries(nextAwaiting)) {
++      const now = days.find((d) => d.day === day)?.text ?? '';
++      const answered = !!now && now !== was;
++      const gaveUp = Date.now() > until;
++      if (!answered && !gaveUp) continue;
++      delete nextAwaiting[day];
++      if (formatSchedule(parseSchedule(now)) !== sent) nextRewritten[day] = now || t('chauffage.table.vide');
++      settled = true;
++    }
++    if (!settled) return;
++    awaiting = nextAwaiting;
++    rewritten = nextRewritten;
++  });
++</script>
++
++{#if !days.length}
++  <p class="muted">{t('chauffage.table.vide')}</p>
++{:else}
++  <div class="week" class:ro={readOnly}>
++    {#each DAYS as day, di (day)}
++      <div class="row">
++        <span class="name" class:wait={awaiting[day]}>
++          {t(`chauffage.jour.${day}`)}
++          {#if awaiting[day]}<small title={t('chauffage.en_attente')}>…</small>{/if}
++        </span>
++        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
++        <div
++          class="track"
++          class:clickable={!readOnly}
++          onpointerdown={(e) => walkTo(di, e)}
++          onkeydown={(e) => addByKey(di, e)}
++          role={readOnly ? undefined : 'button'}
++          tabindex={readOnly ? undefined : 0}
++          aria-label={t('chauffage.table.piste')}>
++          {#each draft[di] as b, bi (b.min)}
++            {@const end = draft[di][bi + 1]?.min ?? 1440}
++            <span class="seg" style:left="{(b.min / 1440) * 100}%" style:width="{((end - b.min) / 1440) * 100}%" style:background={tone(b.deg)} title="{hhmm(b.min)} · {b.deg}°">
++              <em class="num">{b.deg}°</em>
++            </span>
++            <button
++              class="handle"
++              class:anchor={bi === 0}
++              class:sel={selected?.day === di && selected?.index === bi}
++              style:left="{(b.min / 1440) * 100}%"
++              disabled={readOnly || bi === 0}
++              onpointerdown={(e) => dragStart(di, bi, e)}
++              title="{hhmm(b.min)} · {b.deg}°"
++              aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°"></button>
++          {/each}
++          <span class="now" style:left="{(nowMin / 1440) * 100}%"></span>
++        </div>
++        {#if !readOnly}
++          <div class="tools">
++            <button onclick={() => flat(di)} title={t('chauffage.table.aplatir')} aria-label={t('chauffage.table.aplatir')}><Icon name="undo" size={14} /></button>
++            <button onclick={() => applyAll(di)} title={t('chauffage.table.tous')} aria-label={t('chauffage.table.tous')}><Icon name="copy" size={14} /></button>
++          </div>
++        {/if}
++      </div>
++    {/each}
++  </div>
++
++  {#if sel && !readOnly}
++    {@const b = draft[sel.day][sel.index]}
++    <div class="edit" role="group" aria-label={t('chauffage.table.consigne')}>
++      <span>{t(`chauffage.jour.${DAYS[sel.day]}`)} · <b class="num">{hhmm(b.min)}</b></span>
++      <div class="stepper">
++        <button onclick={() => step(sel.day, sel.index, -1)} disabled={b.deg <= MIN_DEG} aria-label={t('commun.clim.moins_chaud')}>−</button>
++        <b class="num">{b.deg}°</b>
++        <button onclick={() => step(sel.day, sel.index, 1)} disabled={b.deg >= MAX_DEG} aria-label={t('commun.clim.plus_chaud')}>+</button>
++      </div>
++      <button class="drop" onclick={() => drop(sel.day, sel.index)} disabled={sel.index === 0} title={t('chauffage.table.supprimer')} aria-label={t('chauffage.table.supprimer')}><Icon name="trash" size={15} /></button>
++      <button class="to" onclick={() => copyTo(sel.day, (sel.day + 1) % 7)} title={t('chauffage.table.copier')} aria-label={t('chauffage.table.copier')}><Icon name="copy" size={15} /></button>
++    </div>
++  {/if}
++
++  {#each Object.entries(rewritten) as [day, text] (day)}
++    <p class="notice">{t('chauffage.message_relu', { texte: `${t(`chauffage.jour.${day}`)} · ${text}` })}</p>
++  {/each}
++
++  {#if !readOnly}
++    <div class="bar">
++      <span class="cap" class:on={dirty}>{dirty ? t('chauffage.table.modifie') : t('chauffage.table.a_jour')}</span>
++      {#if broken.length}
++        <span class="cap bad">{t('chauffage.table.invalide', { jours: broken.map((d) => t(`chauffage.jour.${d}`)).join(', ') })}</span>
++      {:else}
++        <span class="count muted">{t('chauffage.table.paliers', { n: MAX_BLOCKS })}</span>
++      {/if}
++      <button class="ghost" onclick={reload} disabled={!dirty || saving}>{t('commun.annuler')}</button>
++      <button class="save" onclick={save} disabled={!dirty || saving || !!broken.length}><Icon name="save" size={16} />{saving ? t('chauffage.table.envoi') : t('chauffage.table.enregistrer')}</button>
++    </div>
++  {/if}
++{/if}
++
++<style>
++  .week {
++    display: grid;
++    gap: 6px;
++  }
++
++  .row {
++    display: grid;
++    grid-template-columns: 84px 1fr auto;
++    align-items: center;
++    gap: 10px;
++  }
++
++  .name {
++    font-size: 13px;
++    font-weight: 650;
++    color: var(--ink-2);
++  }
++
++  .name.wait {
++    color: var(--warm-ink);
++  }
++
++  .track {
++    position: relative;
++    height: 34px;
++    border-radius: 10px;
++    background: var(--surface-2);
++    overflow: hidden;
++    touch-action: none;
++  }
++
++  .track.clickable {
++    cursor: crosshair;
++  }
++
++  .seg {
++    position: absolute;
++    top: 0;
++    bottom: 0;
++    display: grid;
++    place-items: center;
++    overflow: hidden;
++  }
++
++  .seg em {
++    font-style: normal;
++    font-size: 11.5px;
++    font-weight: 700;
++    color: #fff;
++    text-shadow: 0 1px 2px rgb(0 0 0 / 35%);
++    pointer-events: none;
++  }
++
++  .handle {
++    position: absolute;
++    top: 0;
++    bottom: 0;
++    width: 14px;
++    margin-left: -7px;
++    border: 0;
++    background: none;
++    cursor: ew-resize;
++    padding: 0;
++  }
++
++  .handle::after {
++    content: '';
++    position: absolute;
++    inset: 4px 6px;
++    border-radius: 2px;
++    background: rgb(255 255 255 / 85%);
++  }
++
++  .handle.anchor {
++    cursor: default;
++  }
++
++  .handle.anchor::after {
++    display: none;
++  }
++
++  .handle.sel::after {
++    background: var(--ink);
++  }
++
++  .now {
++    position: absolute;
++    top: 0;
++    bottom: 0;
++    width: 2px;
++    background: var(--alert);
++    opacity: 0.7;
++  }
++
++  .tools {
++    display: flex;
++    gap: 4px;
++  }
++
++  .tools button,
++  .drop,
++  .to {
++    display: grid;
++    place-items: center;
++    width: 30px;
++    height: 30px;
++    border: 0;
++    border-radius: 8px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    cursor: pointer;
++  }
++
++  .edit {
++    display: flex;
++    align-items: center;
++    gap: 14px;
++    margin-top: 10px;
++    padding: 8px 12px;
++    border-radius: 12px;
++    background: var(--surface-2);
++    font-size: 13.5px;
++  }
++
++  .stepper {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++  }
++
++  .stepper button {
++    width: 32px;
++    height: 32px;
++    border: 0;
++    border-radius: 50%;
++    background: var(--surface);
++    color: var(--ink);
++    font-size: 20px;
++    line-height: 1;
++    cursor: pointer;
++  }
++
++  .edit .drop,
++  .edit .to {
++    margin-left: auto;
++  }
++
++  .edit .to {
++    margin-left: 0;
++  }
++
++  .bar {
++    display: flex;
++    align-items: center;
++    gap: 12px;
++    margin-top: 12px;
++  }
++
++  .cap {
++    font-size: 12.5px;
++    font-weight: 650;
++    color: var(--ink-3);
++  }
++
++  .cap.on {
++    color: var(--warm-ink);
++  }
++
++  .count {
++    margin-right: auto;
++    font-size: 12px;
++  }
++
++  .bar .ghost,
++  .bar .save {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    border: 0;
++    border-radius: 999px;
++    padding: 0 16px;
++    height: 34px;
++    font: inherit;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .bar .ghost {
++    background: var(--surface-2);
++    color: var(--ink-2);
++  }
++
++  .bar .save {
++    background: var(--warm);
++    color: #1c1407;
++  }
++
++  .bar button:disabled {
++    opacity: 0.45;
++    cursor: default;
++  }
++
++  .ro .track {
++    opacity: 0.85;
++  }
++
++  .notice {
++    margin: 6px 0 0;
++    padding: 8px 12px;
++    border-radius: var(--r-sm);
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++    font-size: 12.5px;
++  }
++
++  .cap.bad {
++    color: var(--alert);
++  }
++</style>
+diff --git a/web/src/maison/ui/ValveCard.svelte b/web/src/maison/ui/ValveCard.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/ValveCard.svelte
+@@ -0,0 +1,371 @@
++<script>
++  // One thermostatic valve: what it reads, what it does, and who runs it —
++  // the built-in timetable or the household's automations.
++  import { value, reachable, pending, act, nameOf, home } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++  import ScheduleEditor from './ScheduleEditor.svelte';
++  import { parseSchedule, nextTransition, hhmm, neutralize, formatSchedule, isFlat, DAYS } from '../lib/schedule.js';
++
++  let { id } = $props();
++
++  const setpoint = $derived(value(id, 'occupied_heating_setpoint'));
++  const local = $derived(value(id, 'local_temperature'));
++  const mode = $derived(value(id, 'system_mode'));
++  const running = $derived(value(id, 'running_state'));
++  const battery = $derived(value(id, 'battery'));
++  const open = $derived(value(id, 'valve_opening_degree'));
++  const quality = $derived(value(id, 'linkquality'));
++  const busy = $derived(pending(id, 'system_mode') || pending(id, 'occupied_heating_setpoint'));
++  const online = $derived(reachable(id));
++
++  // Three states, said as three states: `auto` runs the valve's own weekly
++  // timetable, `heat` hands the setpoint to the household's automations,
++  // and `off` heats nothing at all — folding `off` under « Automatisations »
++  // told the household its automations decide while the valve was shut.
++  const autoRun = $derived(mode === 'auto');
++  const managed = $derived(mode === 'heat');
++  const shut = $derived(mode === 'off');
++  const low = $derived(typeof battery === 'number' && battery < 20);
++
++  const days = $derived(
++    ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((day) => ({ day, text: value(id, `weekly_schedule_${day}`) })),
++  );
++  const hasSchedule = $derived(days.some((d) => typeof d.text === 'string' && d.text.trim()));
++
++  // The household's two quick temperatures, straight from the config the
++  // heating bar already uses — one source of truth for both surfaces.
++  const confort = $derived(Number(home.config?.heating?.confort ?? 18.5));
++  const reduit = $derived(Number(home.config?.heating?.reduit ?? 16));
++
++  // Today's timetable, so a quick setpoint knows when it would be overrun.
++  const today = $derived(value(id, `weekly_schedule_${DAYS[(new Date().getDay() + 6) % 7]}`));
++  const soon = $derived(
++    (() => {
++      if (!autoRun || typeof today !== 'string') return null;
++      const blocks = parseSchedule(today);
++      if (blocks.length < 2) return null;
++      const now = new Date().getHours() * 60 + new Date().getMinutes();
++      const next = nextTransition(blocks, now);
++      if (!next || next.min - now > 15 || next.min - now <= 0) return null;
++      return next;
++    })(),
++  );
++
++  const near = (a, b) => a != null && b != null && Math.abs(Number(a) - Number(b)) < 0.25;
++
++  let neutralizing = $state(false);
++  let done = $state(null);
++
++  const stepDeg = (dir) => act(`${id}/occupied_heating_setpoint`, Math.round(((setpoint ?? 16) + dir * 0.5) * 2) / 2, t('chauffage.consigne_action', { name: nameOf(id) }));
++  const setMode = (m) => act(`${id}/system_mode`, m, t('chauffage.mode_action', { name: nameOf(id) }));
++
++  // A quick setpoint only writes the setpoint: `system_mode` stays `auto`, so
++  // the valve's own « override until the next step » rule applies.
++  const hold = (deg) => act(`${id}/occupied_heating_setpoint`, deg, t('chauffage.consigne_action', { name: nameOf(id) }));
++
++  async function saveDays(list) {
++    for (const d of list) await act(`${id}/weekly_schedule_${d.day}`, d.text, t('chauffage.table.envoi_jour', { jour: t(`chauffage.jour.${d.day}`) }));
++  }
++
++  /** Flattens every day to one constant step: what stops an old timetable
++   *  from waking up if the valve is put back on « Programme » later. */
++  async function neutralizeAll() {
++    const deg = Number(setpoint) || 16;
++    const text = formatSchedule(neutralize(deg));
++    const daysToWrite = days.filter((d) => !isFlat(parseSchedule(d.text ?? '')) || d.text !== text);
++    if (!daysToWrite.length) return;
++    // Up to seven writes on a battery valve: ask once, then say what happened.
++    if (!confirm(t('chauffage.neutraliser_confirmer', { n: daysToWrite.length, deg }))) return;
++    neutralizing = true;
++    try {
++      await saveDays(daysToWrite.map((d) => ({ day: d.day, text })));
++      done = t('chauffage.neutraliser_fait');
++    } finally {
++      neutralizing = false;
++      setTimeout(() => (done = null), 6000);
++    }
++  }
++</script>
++
++<section class="valve" class:off={mode === 'off'} class:stale={!online}>
++  <header>
++    <h3><Icon name="radiator" size={18} />{nameOf(id)}</h3>
++    <span class="room num" title={t('chauffage.piece')}>{local != null ? `${Math.round(Number(local))}°` : '—'}</span>
++    {#if low}
++      <span class="warn" title={t('chauffage.pile_basse', { pct: battery })}><Icon name="alert" size={15} />{battery} %</span>
++    {/if}
++    {#if !online}<span class="muted small">{t('chauffage.hors_ligne')}</span>{/if}
++  </header>
++
++  <div class="who" role="radiogroup" aria-label={t('chauffage.qui_pilote')}>
++    <button role="radio" aria-checked={autoRun} class:on={autoRun} disabled={busy} onclick={() => setMode('auto')}>
++      <Icon name="clock" size={15} />{t('chauffage.table_titre')}
++    </button>
++    <button role="radio" aria-checked={managed} class:on={managed} disabled={busy} onclick={() => setMode('heat')}>
++      <Icon name="robot" size={15} />{t('chauffage.automatisations')}
++    </button>
++    <button role="radio" aria-checked={shut} class:on={shut} class:shut disabled={busy} onclick={() => setMode('off')}>
++      <Icon name="power" size={15} />{t('chauffage.mode_off_titre')}
++    </button>
++  </div>
++  <p class="hint">
++    {autoRun ? t('chauffage.hint_auto') : managed ? t('chauffage.hint_auto_off') : t('chauffage.hint_off')}
++    {#if managed}<a href="#/automatismes">{t('chauffage.vers_automatismes')}</a>{:else if shut}<button class="relight" onclick={() => setMode('auto')}>{t('chauffage.rallumer')}</button>{/if}
++  </p>
++
++  <div class="setpoint" role="group" aria-label={t('chauffage.consigne')}>
++    <button onclick={() => stepDeg(-1)} disabled={busy || setpoint <= 4} aria-label={t('commun.clim.moins_chaud')}>−</button>
++    <b class="num">{setpoint != null ? `${setpoint}°` : '—'}</b>
++    <button onclick={() => stepDeg(1)} disabled={busy || setpoint >= 35} aria-label={t('commun.clim.plus_chaud')}>+</button>
++    <span class="state">{t('chauffage.mode_' + (mode ?? 'inconnu'))}</span>
++    {#if running === 'heat'}<span class="chip warm">{t('chauffage.chauffe')}</span>{:else}<span class="chip">{t('chauffage.repos')}</span>{/if}
++    {#if open != null}<span class="muted small">{t('chauffage.ouverture', { pct: open })}</span>{/if}
++    {#if quality != null}<span class="muted small">{t('chauffage.signal', { lqi: quality })}</span>{/if}
++  </div>
++
++  <div class="quick" role="group" aria-label={t('chauffage.consignes_rapides')}>
++    <button class:on={near(setpoint, confort)} disabled={busy || !!soon} onclick={() => hold(confort)} title={soon ? t('chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('chauffage.consigne_action', { name: nameOf(id) })}>
++      {t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
++    </button>
++    <button class:on={near(setpoint, reduit)} disabled={busy || !!soon} onclick={() => hold(reduit)} title={soon ? t('chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('chauffage.consigne_action', { name: nameOf(id) })}>
++      {t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
++    </button>
++    {#if soon}<span class="muted small">{t('chauffage.palier_proche', { heure: hhmm(soon.min) })}</span>{/if}
++  </div>
++
++  {#if managed && hasSchedule}
++    <div class="neutral">
++      <button onclick={neutralizeAll} disabled={busy || neutralizing} title={t('chauffage.neutraliser_aide')}>
++        <Icon name="undo" size={15} />{neutralizing ? t('chauffage.table.envoi') : t('chauffage.neutraliser')}
++      </button>
++      {#if done}<span class="muted small">{done}</span>{/if}
++    </div>
++  {/if}
++
++  {#if hasSchedule}
++    <ScheduleEditor
++      {days}
++      readOnly={!autoRun}
++      onsave={saveDays}
++      neutralDeg={Number(value(id, 'occupied_heating_setpoint')) || 16}
++    />
++  {:else}
++    <p class="muted small">{t('chauffage.table_absente')}</p>
++  {/if}
++</section>
++
++<style>
++  .valve {
++    display: grid;
++    gap: 12px;
++    padding: 16px 18px;
++    border-radius: var(--r-md);
++    background: var(--surface);
++    box-shadow: var(--shadow);
++  }
++
++  .valve.stale {
++    opacity: 0.6;
++  }
++
++  header {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++  }
++
++  h3 {
++    display: inline-flex;
++    align-items: center;
++    gap: 8px;
++    margin: 0;
++    font-size: 17px;
++    font-weight: 700;
++  }
++
++  .room {
++    margin-left: auto;
++    font-size: 22px;
++    font-weight: 300;
++  }
++
++  .warn {
++    display: inline-flex;
++    align-items: center;
++    gap: 4px;
++    padding: 3px 9px;
++    border-radius: 999px;
++    background: var(--alert-soft);
++    color: var(--alert);
++    font-size: 12.5px;
++    font-weight: 700;
++  }
++
++  .who {
++    display: inline-flex;
++    align-self: start;
++    padding: 3px;
++    border-radius: 999px;
++    background: var(--surface-2);
++  }
++
++  .who button {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    border: 0;
++    border-radius: 999px;
++    padding: 0 14px;
++    height: 30px;
++    background: transparent;
++    color: var(--ink-3);
++    font: inherit;
++    font-size: 13px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .who button.on {
++    background: var(--surface);
++    color: var(--ink);
++    box-shadow: 0 1px 3px rgb(0 0 0 / 15%);
++  }
++
++  .hint {
++    margin: -4px 0 0;
++    font-size: 12.5px;
++    color: var(--ink-3);
++  }
++
++  .hint a {
++    color: var(--ink-2);
++    font-weight: 650;
++  }
++
++  .setpoint {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    flex-wrap: wrap;
++  }
++
++  .setpoint button {
++    width: 34px;
++    height: 34px;
++    border: 0;
++    border-radius: 50%;
++    background: var(--surface-2);
++    color: var(--ink);
++    font-size: 20px;
++    line-height: 1;
++    cursor: pointer;
++  }
++
++  .setpoint b {
++    min-width: 52px;
++    text-align: center;
++    font-size: 20px;
++  }
++
++  .setpoint button:disabled {
++    opacity: 0.4;
++    cursor: default;
++  }
++
++  .state {
++    font-size: 13.5px;
++    font-weight: 650;
++    color: var(--ink-2);
++  }
++
++  .chip {
++    padding: 3px 9px;
++    border-radius: 999px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    font-size: 12px;
++    font-weight: 650;
++  }
++
++  .quick {
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    flex-wrap: wrap;
++  }
++
++  .quick button {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    border: 0;
++    border-radius: 999px;
++    padding: 0 14px;
++    height: 34px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    font: inherit;
++    font-size: 13px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .quick button.on {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .quick button:disabled {
++    opacity: 0.5;
++    cursor: default;
++  }
++
++  .chip.warm {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .neutral button {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    border: 0;
++    border-radius: 999px;
++    padding: 0 14px;
++    height: 32px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    font: inherit;
++    font-size: 12.5px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .neutral button:disabled {
++    opacity: 0.5;
++    cursor: default;
++  }
++
++  .small {
++    font-size: 12px;
++  }
++
++  .who button.shut.on {
++    background: var(--surface);
++    color: var(--alert);
++    box-shadow: 0 1px 3px rgb(0 0 0 / 15%);
++  }
++
++  .relight {
++    border: 0;
++    padding: 0;
++    background: none;
++    color: var(--ink-2);
++    font: inherit;
++    font-size: 12.5px;
++    font-weight: 650;
++    text-decoration: underline;
++    cursor: pointer;
++  }
++</style>

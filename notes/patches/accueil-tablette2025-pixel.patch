@@ -1,0 +1,1899 @@
+diff --git a/web/src/maison/pages/Accueil.svelte b/web/src/maison/pages/Accueil.svelte
+--- a/web/src/maison/pages/Accueil.svelte
++++ b/web/src/maison/pages/Accueil.svelte
+@@ -1,73 +1,32 @@
+ <script>
+-  import { onMount } from 'svelte';
+-  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, act, pending, HOUSE_TZ } from '../lib/home.svelte.js';
++  import { home, hub, value, device, clock, num, nameOf, doorOpen, leak, lowBattery, act, pending, HOUSE_TZ } from '../lib/home.svelte.js';
+   import { isPrinter, phase } from '../lib/printers.js';
+   import { t, locale } from '../../lib/i18n.svelte.js';
+   import Icon from '../ui/Icon.svelte';
+-  import LightTile from '../ui/LightTile.svelte';
+-  import ClimateCard from '../ui/ClimateCard.svelte';
+-  import CameraTile from '../ui/CameraTile.svelte';
+-  import AmbiancePicker from '../ui/AmbiancePicker.svelte';
+-  import Routines from '../ui/Routines.svelte';
+   import SkyHero from '../ui/SkyHero.svelte';
+   import HeatingBar from '../ui/HeatingBar.svelte';
+   import WeekWeather from '../ui/WeekWeather.svelte';
+-  import RoomStrip from '../ui/RoomStrip.svelte';
+-  import RoomCard from '../ui/RoomCard.svelte';
++  import WeatherNow from '../ui/WeatherNow.svelte';
++  import TabletteRows from '../ui/TabletteRows.svelte';
++  import BatteryGauge from '../ui/BatteryGauge.svelte';
+   import AccueilBadges from '../ui/AccueilBadges.svelte';
+   import PlanPreview from '../ui/PlanPreview.svelte';
+   import BinsCard from '../ui/BinsCard.svelte';
+-  import PlanOverlay from '../ui/PlanOverlay.svelte';
+   import PoolCard from '../ui/PoolCard.svelte';
++  import CameraCard from '../ui/CameraCard.svelte';
+ 
+   const cfg = $derived(home.config ?? {});
+   const out = $derived(cfg.outdoor ?? {});
+ 
+-  const rooms = $derived.by(() => {
+-    const byName = new Map(roomList().map((r) => [r.name, r]));
+-    const defs = (cfg.rooms ?? []).length ? cfg.rooms : [...byName.keys()].map((name) => ({ name }));
+-    return defs.map((def) => byName.get(def.name)).filter(Boolean);
++  // La caméra de la tablette : la première des favoris (l'entrée), sinon la
++  // première caméra de la maison. Elle n'existe que si elle répond.
++  const camera = $derived.by(() => {
++    const fav = (cfg.favorites?.cameras ?? [])[0];
++    if (fav?.id && device(fav.id)) return { id: fav.id, name: fav.name ?? nameOf(fav.id) };
++    const cam = Object.values(hub.devices).find((d) => d.camera === true);
++    return cam ? { id: cam.id, name: nameOf(cam.id) } : null;
+   });
+ 
+-  const lights = $derived(cfg.favorites?.lights ?? []);
+-
+-  // Lumières: condensed by default (pads and ambiances as icons alone),
+-  // names and readings on demand. Remembered for this device, like the
+-  // Pièces page.
+-  let lightsCompact = $state((() => {
+-    try {
+-      return localStorage.getItem('moli.lights-look') !== 'detail';
+-    } catch {
+-      return true;
+-    }
+-  })());
+-  function setLightsCompact(v) {
+-    lightsCompact = v;
+-    try {
+-      localStorage.setItem('moli.lights-look', v ? 'compact' : 'detail');
+-    } catch {
+-      /* remembered for this visit only */
+-    }
+-  }
+-
+-  // Ambiances, room by room (the last room chosen is remembered here).
+-  const moodRooms = $derived(roomList().map((r) => ({ name: r.name, lamps: lampsOf(r) })).filter((r) => r.lamps.length));
+-  let moodPick = $state((() => {
+-    try {
+-      return localStorage.getItem('moli.mood-room');
+-    } catch {
+-      return null;
+-    }
+-  })());
+-  const mood = $derived(moodRooms.find((r) => r.name === moodPick) ?? moodRooms.find((r) => r.name === 'Salon') ?? moodRooms[0]);
+-  function pickRoom(name) {
+-    moodPick = name;
+-    try {
+-      localStorage.setItem('moli.mood-room', name);
+-    } catch {
+-      /* remembered for this visit only */
+-    }
+-  }
+ 
+   // The house's mode (a helper, « Mode Maison »): one tap, like Home
+   // Assistant's mode buttons.
+@@ -145,20 +104,6 @@
+     if (out.pool && value(out.pool, 'action_required') === true) list.push({ tone: 'cool', icon: 'pool', text: t('maison.accueil.piscine_oeil'), href: '#/dehors' });
+     return list;
+   });
+-
+-  const bell = $derived((cfg.favorites?.cameras ?? [])[0]);
+-
+-  // The last real passage at the door (the history knows; the live value
+-  // is refreshed every few seconds whatever happens).
+-  let passage = $state(null);
+-  onMount(() => {
+-    const refresh = () => bell && lastSeen(bell.id).then((ts) => (passage = ts));
+-    const t = setInterval(refresh, 120_000);
+-    return () => clearInterval(t);
+-  });
+-  $effect(() => {
+-    if (bell) lastSeen(bell.id).then((ts) => (passage = ts));
+-  });
+ </script>
+ 
+ <div class="accueil">
+@@ -190,76 +135,21 @@
+ 
+   <AccueilBadges />
+ 
+-  <RoomStrip />
+-
+   <div class="sections">
+     <div class="col">
++      <WeatherNow />
+       <WeekWeather />
+-
+-      {#each rooms.filter((r) => r.name === 'Salon') as room (room.name)}
+-        <RoomCard {room} icons={lightsCompact} />
+-      {/each}
+-
+-      <div class="rooms-grid">
+-        {#each rooms.filter((r) => r.name !== 'Salon') as room (room.name)}
+-          <RoomCard {room} icons={lightsCompact} />
+-        {/each}
+-      </div>
+-
+-      <section class="card lights" aria-label={t('maison.accueil.lumieres')}>
+-        <div class="card-head">
+-          <div class="head-actions">
+-            <div class="look" role="radiogroup" aria-label={t('maison.pieces.affichage')}>
+-              <button role="radio" aria-checked={!lightsCompact} class:active={!lightsCompact} onclick={() => setLightsCompact(false)} aria-label={t('maison.pieces.avec_noms')} title={t('maison.pieces.avec_noms')}>Aa</button>
+-              <button role="radio" aria-checked={lightsCompact} class:active={lightsCompact} onclick={() => setLightsCompact(true)} aria-label={t('maison.pieces.icones')} title={t('maison.pieces.icones')}><Icon name="light" size={15} /></button>
+-            </div>
+-          </div>
+-        </div>
+-        <div class="tiles">
+-          {#each lights as l (l.id)}
+-            <LightTile id={l.id} name={l.name} icon={l.icon} also={l.also ?? []} compact={lightsCompact} />
+-          {/each}
+-        </div>
+-        {#if mood}
+-          <div class="moods">
+-            <div class="moods-head">
+-              <span class="moods-title"><Icon name="palette" size={16} />{t('maison.accueil.ambiance')}</span>
+-              <div class="rooms" role="group" aria-label={t('maison.accueil.piece')}>
+-                {#each moodRooms as r (r.name)}
+-                  <button class:on={r.name === mood.name} onclick={() => pickRoom(r.name)} aria-pressed={r.name === mood.name}>{r.name}</button>
+-                {/each}
+-              </div>
+-            </div>
+-            <AmbiancePicker lights={mood.lamps} label={mood.name} compact={lightsCompact} />
+-          </div>
+-        {/if}
+-      </section>
+-
+-      {#if (cfg.favorites?.climate ?? []).length}
+-        <section class="card climate" aria-label={t('maison.accueil.clim')}>
+-          <div class="clims">
+-            {#each cfg.favorites?.climate ?? [] as c (c.id)}
+-              <ClimateCard id={c.id} name={c.name} />
+-            {/each}
+-          </div>
+-        </section>
+-      {/if}
+-
+       <HeatingBar />
++      <TabletteRows />
+     </div>
+ 
+     <div class="col">
+-      {#if bell}
+-        <section class="card doorbell" aria-label={t('maison.accueil.devant_porte')}>
+-          <CameraTile id={bell.id} name={bell.name} refresh={15} />
+-          <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
+-        </section>
+-      {/if}
+-
++      <div class="bins-cam">
++        <BinsCard />
++        {#if camera}<CameraCard id={camera.id} name={camera.name} />{/if}
++      </div>
+       {#if out.pool}<PoolCard />{/if}
+-      <BinsCard />
+-      <PlanOverlay />
+-      <Routines />
++      <BatteryGauge />
+     </div>
+   </div>
+ </div>
+@@ -326,159 +216,58 @@
+     font-size: 14px;
+   }
+ 
+-  /* The HA-style two-column « sections » layout: a wide left column, a
+-     narrower right one. One column on narrow screens. */
++  /* La grille à deux colonnes de la tablette : deux colonnes égales,
++     gouttière de 32 px, l'ensemble centré. Le contenu de la page peut être
++     plus large que 928 px : sans le centrage, les deux colonnes restaient
++     collées à gauche en laissant un grand vide à droite (on croyait à une
++     troisième colonne manquante). */
+   .sections {
+     display: grid;
+-    gap: 20px;
++    gap: 32px;
+     align-items: start;
++    grid-template-columns: minmax(0, 1fr);
++    width: 100%;
++    max-width: 464px;
++    margin-inline: auto;
+   }
+ 
+   .col {
+     display: grid;
+-    gap: 20px;
++    gap: 12px;
+     align-content: start;
+     min-width: 0;
+   }
+ 
+-  /* Salon keeps the full width; the other rooms pair up, two per row. */
+-  .rooms-grid {
++  /* Poubelles empilées à gauche, caméra à droite : le « horizontal-stack »
++     de la tablette. La caméra prend la place restante. */
++  .bins-cam {
+     display: grid;
+-    grid-template-columns: 1fr 1fr;
+-    gap: 20px;
++    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
++    gap: 12px;
+     align-items: start;
+-    min-width: 0;
+-  }
+-
+-  @media (max-width: 760px) {
+-    .rooms-grid {
+-      grid-template-columns: 1fr;
+-    }
+   }
+ 
++  /* Deux colonnes dès qu'elles tiennent vraiment (2 × 464 + 32 = 960 px de
++     contenu, soit ~1100 px de fenêtre avec la barre latérale) : en dessous,
++     deux colonnes de 360 px ne se lisent pas. Une seule colonne, bornée à
++     464 px et centrée, dans tous les autres cas. */
+   @media (min-width: 1100px) {
+     .sections {
+-      grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
++      grid-template-columns: repeat(2, minmax(0, 1fr));
++      max-width: 960px;
+     }
+   }
+ 
+-  .head-actions {
+-    display: flex;
+-    align-items: center;
+-    gap: 10px;
+-    flex: none;
+-  }
+-
+-  .look {
+-    display: inline-flex;
+-    padding: 3px;
+-    border-radius: 999px;
+-    background: var(--surface-2);
+-  }
+-
+-  .look button {
+-    display: grid;
+-    place-items: center;
+-    min-width: 34px;
+-    height: 28px;
+-    border: none;
+-    border-radius: 999px;
+-    background: transparent;
+-    color: var(--ink-3);
+-    font: inherit;
+-    font-size: 13px;
+-    font-weight: 700;
+-    cursor: pointer;
+-  }
+-
+-  .look button.active {
+-    background: var(--surface);
+-    color: var(--ink);
+-    box-shadow: 0 1px 3px rgb(0 0 0 / 15%);
+-  }
+-
+-  .moods {
+-    grid-template-columns: minmax(0, 1fr);
+-    margin-top: 18px;
+-    padding-top: 16px;
+-    border-top: 1px solid var(--line);
+-    display: grid;
+-    gap: 12px;
+-  }
+-
+-  .moods-head {
+-    min-width: 0;
+-    display: flex;
+-    align-items: center;
+-    gap: 10px 14px;
+-    flex-wrap: wrap;
+-  }
+-
+-  .moods-title {
+-    display: inline-flex;
+-    align-items: center;
+-    gap: 6px;
+-    font-weight: 700;
+-    font-size: 14px;
+-  }
+-
+-  .rooms {
+-    display: flex;
+-    gap: 6px;
+-    overflow-x: auto;
+-    scrollbar-width: none;
+-    min-width: 0;
+-    flex: 1;
+-  }
+-
+-  .rooms button {
+-    flex: none;
+-    border: 0;
+-    border-radius: 999px;
+-    padding: 6px 12px;
+-    font: inherit;
+-    font-size: 13px;
+-    font-weight: 650;
+-    background: var(--surface-2);
+-    color: var(--ink-3);
+-    cursor: pointer;
+-  }
+-
+-  .rooms button.on {
+-    background: var(--warm-soft);
+-    color: var(--warm-ink);
+-  }
+-
+-  .count {
+-    font-weight: 550;
+-    color: var(--ink-3);
+-    margin-left: 4px;
+-  }
+-
+-  .tiles {
+-    display: grid;
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
+-    gap: 12px;
+-  }
+-
+-  .clims {
+-    display: grid;
+-    grid-template-columns: 1fr 1fr;
+-    gap: 12px;
++  /* Sur un téléphone, les poubelles et la caméra s'empilent : deux
++     vignettes de 160 px de large ne se lisent pas. */
++  @media (max-width: 520px) {
++    .bins-cam {
++      grid-template-columns: minmax(0, 1fr);
++    }
+   }
+ 
+   .small {
+     font-size: 13px;
+     margin-top: 10px;
+   }
+-
+-  @media (max-width: 760px) {
+-    .tiles {
+-      grid-template-columns: 1fr 1fr;
+-    }
+-
+-    .clims {
+-      grid-template-columns: 1fr;
+-    }
+-  }
+ </style>
+diff --git a/web/src/maison/ui/AccueilBadges.svelte b/web/src/maison/ui/AccueilBadges.svelte
+--- a/web/src/maison/ui/AccueilBadges.svelte
++++ b/web/src/maison/ui/AccueilBadges.svelte
+@@ -1,77 +1,117 @@
+ <script>
+-  import { home, hub, device, value, isOn, toggle, nameOf, doorOpen, pending } from '../lib/home.svelte.js';
++  // La rangée de pastilles de la tablette : l'alarme, les quatre contacts,
++  // Tempo, la consommation de l'appartement et du reste de la maison, puis
++  // les appareils qu'on commande d'un tap. Une seule ligne, 36 px de haut,
++  // qui défile si l'écran est étroit.
++  import { home, hub, value, isOn, toggle, nameOf, doorOpen, pending } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   const CONTACT = ['contact', 'doorcontact_state'];
+   const hasContact = (d) => d.points.some((p) => CONTACT.includes(p.key));
+ 
+-  const doors = $derived.by(() => {
+-    const hidden = home.config?.hidden ?? [];
+-    const listed = home.config?.doors ?? [];
+-    const known = new Set(listed.map((d) => d.id));
+-    const others = Object.values(hub.devices)
+-      .filter((d) => !known.has(d.id) && !hidden.includes(d.id) && hasContact(d))
+-      .map((d) => ({ id: d.id, name: nameOf(d.id) }));
+-    return [...listed, ...others];
++  // Les alarmes de la tablette (maison, grange). Moli n'a pas de pilote
++  // d'alarme : tant que la configuration n'en nomme pas, chaque pastille
++  // reste muette et le dit — deux pastilles, deux endroits, jamais deux
++  // fois la même.
++  const ALARMS = [
++    { key: 'maison', label: 'maison.accueil.alarme_maison' },
++    { key: 'grange', label: 'maison.accueil.alarme_grange' },
++  ];
++  const alarms = $derived.by(() => {
++    const listed = home.config?.badges?.alarms ?? [];
++    return ALARMS.map((a, i) => ({ ...a, id: listed[i]?.id ?? null }));
+   });
+-  const openCount = $derived(doors.filter((d) => doorOpen(d.id) === true).length);
+-  const silentCount = $derived(doors.filter((d) => device(d.id)?.online === false).length);
+-  const doorTone = $derived(openCount ? 'warm' : silentCount ? 'cool' : 'good');
+-
+-  const meter = $derived.by(() => {
+-    for (const id of home.config?.badges?.meters ?? []) if (device(id)) return id;
+-    return Object.values(hub.devices).find((d) => /tore/i.test(nameOf(d.id)))?.id ?? null;
++
++  // Les quatre contacts de la maison, dans l'ordre de la tablette : la
++  // baie, l'atelier, la grange, la boîte aux lettres. La configuration
++  // (`doors`) donne l'ordre et les noms ; les autres sortent d'eux-mêmes.
++  const CONTACTS = [
++    { key: 'baie', icon: 'door', label: 'maison.accueil.badge_baie', match: /porte-?fen|sliding/i },
++    { key: 'atelier', icon: 'atelier', label: 'maison.accueil.badge_atelier', match: /atelier/i },
++    { key: 'grange', icon: 'home-roof', label: 'maison.accueil.badge_grange', match: /grange|garage/i },
++    { key: 'boite', icon: 'package', label: 'maison.accueil.badge_boite', match: /boite|boîte|mailbox/i },
++  ];
++
++  const contacts = $derived.by(() => {
++    const listed = home.config?.doors ?? [];
++    const pool = [...listed.map((d) => ({ id: d.id, name: d.name })), ...Object.values(hub.devices).filter((d) => hasContact(d)).map((d) => ({ id: d.id, name: nameOf(d.id) }))];
++    const seen = new Set();
++    return CONTACTS.map((c) => {
++      const hit = pool.find((p) => !seen.has(p.id) && (c.match.test(p.name ?? '') || c.match.test(p.id)));
++      if (hit) seen.add(hit.id);
++      return { ...c, id: hit?.id ?? null };
++    });
+   });
+-  const watts = $derived(meter ? value(meter, 'power') : null);
+-  const wattsShown = $derived(watts != null ? Math.round(Math.abs(Number(watts))) : null);
+ 
+-  // Tempo (EDF): the day's colour and tomorrow's, beside the live power.
++  // Tempo (EDF) : la couleur du jour et celle de demain.
+   const COLOURS = ['bleu', 'blanc', 'rouge'];
+   const known = (c) => COLOURS.includes(c);
+   const tempoId = $derived(home.config?.outdoor?.tempo ?? null);
+   const tempoDay = $derived(tempoId ? value(tempoId, 'today') : null);
+   const tempoNext = $derived(tempoId ? value(tempoId, 'tomorrow') : null);
+-  // A day whose colour is unknown says nothing: the badge hides outright.
+-  const tempoKnown = $derived(known(tempoDay));
+   const tempoName = (c) => t(`maison.tempo.${known(c) ? c : 'inconnu'}`);
+ 
++  // Les deux pinces du Linky : l'appartement et ce qui reste de la maison.
++  const linky = $derived(home.config?.badges?.linky ?? 'linky:linky');
++  const watts = (key) => {
++    const v = value(linky, key);
++    return typeof v === 'number' ? `${Math.round(Math.abs(v))} W` : '—';
++  };
++  const appartTone = $derived.by(() => {
++    const v = Number(value(linky, 'power_appart'));
++    if (!Number.isFinite(v)) return '';
++    const w = Math.abs(v);
++    return w < 1000 ? 'good' : w < 3000 ? 'warm' : 'alert';
++  });
++
+   const switches = $derived(home.config?.badges?.switches ?? []);
+ </script>
+ 
+ <nav class="badges" aria-label={t('maison.accueil.badges')}>
+-  <a class="badge {doorTone}" href="#/pieces">
+-    <Icon name={openCount ? 'door-open' : 'door-closed'} size={16} />
+-    {#if openCount}
+-      {t('maison.accueil.badges_portes', { count: openCount })}
+-    {:else if silentCount}
+-      {t('maison.accueil.badges_portes_muettes')}
++  {#each alarms as a (a.key)}
++    {@const state = a.id ? value(a.id, 'alarm') : null}
++    <span class="badge" class:silent={state == null} class:alert={state === 'on' || state === true} class:good={state === 'off' || state === false} title={state == null ? t('maison.accueil.badge_alarme_indisponible', { name: t(a.label) }) : t(a.label)}>
++      <Icon name="shield" size={16} />{state == null ? '—' : t(a.label)}
++    </span>
++  {/each}
++
++  {#each contacts as c (c.key)}
++    {@const open = c.id ? doorOpen(c.id) === true : null}
++    {#if open == null}
++      <span class="badge silent" title={t('maison.accueil.badge_contact_inconnu')}>
++        <Icon name={c.icon} size={16} />—
++      </span>
+     {:else}
+-      {t('maison.accueil.badges_portes_fermees')}
++      <a class="badge" class:alert={open} class:good={!open} href="#/pieces" title={t(c.label)}>
++        <Icon name={open ? 'door-open' : c.icon} size={16} />
++      </a>
+     {/if}
+-  </a>
++  {/each}
+ 
+-  {#if meter}
+-    <a class="badge cool" href="#/energie">
+-      <Icon name="bolt" size={16} />
+-      {t('maison.accueil.badges_conso', { value: wattsShown != null ? `${wattsShown} W` : '—' })}
++  {#if known(tempoDay)}
++    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo')}>
++      <i class="dot {tempoDay}" aria-hidden="true"></i>{tempoName(tempoDay)}
+     </a>
+   {/if}
+ 
+-  {#if tempoKnown}
+-    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo')} aria-label={`${t('maison.accueil.badges_tempo')} : ${t('maison.accueil.badges_tempo_jour')} ${tempoName(tempoDay)}${known(tempoNext) ? `, ${t('maison.accueil.badges_tempo_demain')} ${tempoName(tempoNext)}` : ''}`}>
+-      <i class="dot {tempoDay}" aria-hidden="true"></i>
+-      <span class="tl">{t('maison.accueil.badges_tempo_jour')}</span>{tempoName(tempoDay)}
+-      {#if known(tempoNext)}
+-        <i class="dot {tempoNext}" aria-hidden="true"></i>
+-        <span class="tl">{t('maison.accueil.badges_tempo_demain')}</span>{tempoName(tempoNext)}
+-      {/if}
++  {#if known(tempoNext)}
++    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo_demain')}>
++      <i class="dot {tempoNext}" aria-hidden="true"></i>{tempoName(tempoNext)}
+     </a>
+   {/if}
+ 
++  <a class="badge {appartTone}" href="#/energie" title={t('maison.accueil.badge_appart')}>
++    <Icon name="flash" size={16} />{watts('power_appart')}
++  </a>
++
++  <a class="badge" href="#/energie" title={t('maison.accueil.badge_residuel')}>
++    <Icon name="bolt" size={16} />{watts('power_residuel')}
++  </a>
++
+   {#each switches as s (s.id)}
+-    <button class="badge" class:on={isOn(s.id)} class:busy={pending(s.id)} aria-pressed={isOn(s.id)} onclick={() => toggle(s.id, s.name)}>
+-      <Icon name={s.icon ?? 'power'} size={16} />{s.name}
++    <button class="badge" class:on={isOn(s.id)} class:busy={pending(s.id)} aria-pressed={isOn(s.id)} aria-label={s.name} title={s.name} onclick={() => toggle(s.id, s.name)}>
++      <Icon name={s.icon ?? 'power'} size={16} />{#if !s.icon_only}{s.name}{/if}
+     </button>
+   {/each}
+ </nav>
+@@ -79,28 +119,31 @@
+ <style>
+   .badges {
+     display: flex;
++    align-items: center;
+     gap: 8px;
++    height: 36px;
+     overflow-x: auto;
+     scrollbar-width: none;
+     min-width: 0;
+-    padding-bottom: 2px;
+   }
+ 
+   .badge {
+     flex: none;
+     display: inline-flex;
+     align-items: center;
+-    gap: 7px;
++    gap: 6px;
++    height: 36px;
+     border: 0;
+     border-radius: 999px;
+-    padding: 8px 14px;
++    padding: 0 12px;
+     font: inherit;
+-    font-size: 14px;
++    font-size: 13px;
+     font-weight: 650;
+-    background: var(--surface-2);
++    background: var(--surface);
+     color: var(--ink-3);
+     text-decoration: none;
+     cursor: pointer;
++    box-shadow: var(--shadow);
+     transition: background 0.2s var(--ease), color 0.2s var(--ease);
+   }
+ 
+@@ -114,9 +157,15 @@
+     color: var(--warm-ink);
+   }
+ 
+-  .badge.cool {
+-    background: var(--cool-soft, color-mix(in srgb, var(--cool) 16%, var(--surface-2)));
+-    color: var(--cool);
++  .badge.alert {
++    background: var(--alert-soft);
++    color: var(--alert);
++  }
++
++  .badge.silent {
++    color: var(--ink-3);
++    opacity: 0.7;
++    cursor: default;
+   }
+ 
+   .badge.on {
+@@ -130,25 +179,15 @@
+   }
+ 
+   .badge.tempo {
+-    gap: 6px;
++    gap: 5px;
+     color: var(--ink-2);
+   }
+ 
+-  .badge.tempo .tl {
+-    color: var(--ink-3);
+-    font-weight: 600;
+-  }
+-
+   .badge.tempo .dot {
+-    width: 10px;
+-    height: 10px;
++    width: 9px;
++    height: 9px;
+     border-radius: 50%;
+     background: var(--ink-3);
+-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+-  }
+-
+-  .badge.tempo .dot + .tl {
+-    margin-left: 2px;
+   }
+ 
+   .badge.tempo .dot.bleu {
+@@ -162,9 +201,4 @@
+   .badge.tempo .dot.blanc {
+     background: #eef1f6;
+   }
+-
+-  .badge.tempo .dot.inconnu {
+-    background: transparent;
+-    box-shadow: inset 0 0 0 1px var(--ink-3);
+-  }
+ </style>
+diff --git a/web/src/maison/ui/BatteryGauge.svelte b/web/src/maison/ui/BatteryGauge.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/BatteryGauge.svelte
+@@ -0,0 +1,70 @@
++<script>
++  // La jauge 0–16 kWh de la tablette (le champ de la batterie solaire).
++  // Moli n'a pas d'onduleur : la carte dit « — » et pourquoi. Aucune
++  // valeur inventée, aucune graduation trompeuse. Si la maison déclare un
++  // jour une source (`badges.gauge`), la carte la nomme au lieu de nier.
++  import { home, value, nameOf } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  const source = $derived(home.config?.badges?.gauge ?? null);
++  const level = $derived(source ? value(source, 'level') : null);
++  const shown = $derived(typeof level === 'number' ? `${Math.round(level)} %` : '—');
++  const words = $derived(source ? t('maison.accueil.batterie_source', { source: nameOf(source) }) : t('maison.accueil.batterie_absente'));
++</script>
++
++<section class="card gauge" aria-label={t('maison.accueil.batterie')}>
++  <span class="ico"><Icon name="bolt" size={18} /></span>
++  <span class="words">
++    <b>{t('maison.accueil.batterie')}</b>
++    <small>{words}</small>
++  </span>
++  <span class="value num">{shown}</span>
++</section>
++
++<style>
++  .gauge {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    height: 56px;
++    padding: 0 14px;
++  }
++
++  .ico {
++    flex: none;
++    display: grid;
++    place-items: center;
++    width: 32px;
++    height: 32px;
++    border-radius: 999px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++  }
++
++  .words {
++    display: grid;
++    gap: 1px;
++    min-width: 0;
++    flex: 1 1 auto;
++  }
++
++  .words b {
++    font-size: 14px;
++    font-weight: 700;
++  }
++
++  .words small {
++    font-size: 12px;
++    color: var(--ink-3);
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
++  }
++
++  .value {
++    font-size: 18px;
++    font-weight: 750;
++    color: var(--ink-3);
++  }
++</style>
+diff --git a/web/src/maison/ui/BinsCard.svelte b/web/src/maison/ui/BinsCard.svelte
+--- a/web/src/maison/ui/BinsCard.svelte
++++ b/web/src/maison/ui/BinsCard.svelte
+@@ -3,8 +3,9 @@
+   // Chaque bac a une date d'ancrage et une récurrence de 14 jours (une
+   // semaine sur deux), lues dans la configuration de la maison. Jours
+   // restants calculés depuis la date du jour, à l'heure de la maison.
++  // Deux cartes côte à côte, comme la tablette (J-10 · mer 28/10).
+   import { home } from '../lib/home.svelte.js';
+-  import { t } from '../../lib/i18n.svelte.js';
++  import { t, locale } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   // { jaune: { anchor: '2026-10-28' }, noire: { anchor: '2026-10-21' } }
+@@ -29,8 +30,8 @@
+     midnight.setHours(0, 0, 0, 0);
+     const nowMs = midnight.getTime();
+     return [
+-      { key: 'jaune', icon: 'recycle', tone: 'yellow', label: t('maison.accueil.poubelle_jaune'), at: nextOn(bins.jaune?.anchor, nowMs) },
+-      { key: 'noire', icon: 'trash-outline', tone: 'black', label: t('maison.accueil.poubelle_noire'), at: nextOn(bins.noire?.anchor, nowMs) },
++      { key: 'jaune', icon: 'recycle', tone: 'yellow', label: t('maison.accueil.poubelle_jaune_court'), at: nextOn(bins.jaune?.anchor, nowMs) },
++      { key: 'noire', icon: 'trash-outline', tone: 'black', label: t('maison.accueil.poubelle_noire_court'), at: nextOn(bins.noire?.anchor, nowMs) },
+     ]
+       .filter((r) => r.at != null)
+       .map((r) => ({ ...r, days: Math.round((r.at - nowMs) / DAY) }))
+@@ -40,82 +41,68 @@
+   function when(days) {
+     if (days <= 0) return t('maison.accueil.poubelle_aujourdhui');
+     if (days === 1) return t('maison.accueil.poubelle_demain');
+-    return t('maison.accueil.poubelle_dans', { n: days });
++    return t('maison.accueil.poubelle_j_moins', { n: days });
+   }
+ 
+   function dayLabel(ms) {
+-    return new Date(ms).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'short' });
++    return new Date(ms).toLocaleDateString(locale(), { weekday: 'short', day: 'numeric', month: '2-digit' });
+   }
+ </script>
+ 
+ {#if rows.length}
+-  <section class="card bins" aria-label={t('maison.accueil.poubelles')}>
+-    <div class="card-head">
+-      <h2><Icon name="trash" size={16} />{t('maison.accueil.poubelles')}</h2>
+-    </div>
+-    <div class="rows">
+-      {#each rows as r (r.key)}
+-        <div class="row" class:soon={r.days <= 1}>
+-          <span class="dot {r.tone}"><Icon name={r.icon} size={15} /></span>
+-          <span class="words">
+-            <b>{r.label}</b>
+-            <small class="muted">{dayLabel(r.at)}</small>
+-          </span>
+-          <span class="when {r.days <= 1 ? 'hot' : ''}">{when(r.days)}</span>
+-        </div>
+-      {/each}
+-    </div>
+-  </section>
++  <div class="stack" aria-label={t('maison.accueil.poubelles')} role="group">
++    {#each rows as r (r.key)}
++      <a class="bin" class:soon={r.days <= 1} href="#/dehors" title={r.label}>
++        <span class="ico {r.tone}"><Icon name={r.icon} size={17} /></span>
++        <span class="words">
++          <b>{when(r.days)}</b>
++          <small>{r.label} · {dayLabel(r.at)}</small>
++        </span>
++      </a>
++    {/each}
++  </div>
+ {/if}
+ 
+ <style>
+-  .bins {
++  .stack {
+     display: grid;
+-    gap: 12px;
+-  }
+-
+-  .card-head h2 {
+-    display: inline-flex;
+-    align-items: center;
++    grid-template-columns: 1fr;
+     gap: 8px;
+-    font-size: 16px;
+-    font-weight: 700;
+   }
+ 
+-  .rows {
+-    display: grid;
+-    gap: 8px;
+-  }
+-
+-  .row {
++  .bin {
+     display: flex;
+     align-items: center;
+-    gap: 12px;
+-    padding: 8px 10px;
+-    border-radius: 12px;
+-    background: var(--surface-2);
++    gap: 10px;
++    min-height: 56px;
++    padding: 0 12px;
++    border-radius: var(--r-md);
++    background: var(--surface);
++    box-shadow: var(--shadow);
++    color: inherit;
++    text-decoration: none;
++    min-width: 0;
+   }
+ 
+-  .row.soon {
++  .bin.soon {
+     background: var(--warm-soft);
+   }
+ 
+-  .dot {
++  .ico {
+     flex: none;
+     display: grid;
+     place-items: center;
+-    width: 30px;
+-    height: 30px;
+-    border-radius: 9px;
+-    background: var(--surface);
+-    color: var(--ink-2);
++    width: 32px;
++    height: 32px;
++    border-radius: 999px;
++    background: var(--surface-2);
+   }
+ 
+-  .dot.yellow {
++  .ico.yellow {
+     color: #b48a00;
+   }
+ 
+-  .dot.black {
++  .ico.black {
+     color: var(--ink-3);
+   }
+ 
+@@ -123,26 +110,28 @@
+     display: grid;
+     gap: 1px;
+     min-width: 0;
+-    flex: 1;
+   }
+ 
+   .words b {
+     font-size: 14px;
+-    font-weight: 650;
++    font-weight: 750;
+   }
+ 
+   .words small {
+     font-size: 12px;
+-  }
+-
+-  .when {
+-    flex: none;
+-    font-size: 13px;
+-    font-weight: 700;
+     color: var(--ink-3);
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
+   }
+ 
+-  .when.hot {
++  .soon .words small {
+     color: var(--warm-ink);
+   }
++
++  @media (max-width: 760px) {
++    .stack {
++      grid-template-columns: 1fr;
++    }
++  }
+ </style>
+diff --git a/web/src/maison/ui/CameraCard.svelte b/web/src/maison/ui/CameraCard.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/CameraCard.svelte
+@@ -0,0 +1,176 @@
++<script>
++  // La vignette caméra de la tablette (la « picture-entity » de Home
++  // Assistant, à côté des poubelles) : la dernière image de la caméra,
++  // rafraîchie tant que l'écran est visible, 120 px de haut. Un tap
++  // agrandit, comme partout ailleurs dans la maison.
++  import { onDestroy, onMount, untrack } from 'svelte';
++  import { device, value } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  let { id, name = null, refresh = 10 } = $props();
++
++  const MIN_GAP = 1000;
++
++  let src = $state(null);
++  let loading = $state(false);
++  let failed = $state(false);
++  let visible = document.visibilityState === 'visible';
++  let lastAt = 0;
++  let destroyed = false;
++
++  const camera = $derived(id);
++  const every = $derived(refresh > 0 ? refresh * 1000 : 0);
++  const online = $derived(device(id)?.online !== false);
++  const title = $derived(name ?? t('maison.accueil.camera'));
++
++  async function load(asked = false) {
++    if (loading || !visible) return;
++    if (!asked && Date.now() - lastAt < MIN_GAP) return;
++    lastAt = Date.now();
++    loading = true;
++    try {
++      const res = await fetch(`/api/devices/${encodeURIComponent(id)}/snapshot`);
++      if (!res.ok) throw new Error(res.status);
++      const url = URL.createObjectURL(await res.blob());
++      const img = new Image();
++      img.src = url;
++      await Promise.race([img.decode().catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
++      if (destroyed) {
++        URL.revokeObjectURL(url);
++        return;
++      }
++      if (src) URL.revokeObjectURL(src);
++      src = url;
++      failed = false;
++    } catch {
++      failed = true;
++    } finally {
++      loading = false;
++    }
++  }
++
++  function onVisibility() {
++    visible = document.visibilityState === 'visible';
++    if (visible) load();
++  }
++
++  onMount(() => {
++    document.addEventListener('visibilitychange', onVisibility);
++    return () => document.removeEventListener('visibilitychange', onVisibility);
++  });
++
++  $effect(() => {
++    void camera;
++    const ms = every;
++    untrack(() => load(true));
++    if (!ms) return;
++    const timer = setInterval(() => load(), ms);
++    return () => clearInterval(timer);
++  });
++
++  onDestroy(() => {
++    destroyed = true;
++    if (src) URL.revokeObjectURL(src);
++  });
++
++  const moving = $derived(value(id, 'motion') === true || Number(value(id, 'person') ?? 0) > 0);
++</script>
++
++<button class="cam" class:on={moving} onclick={() => load(true)} title={title} aria-label={t('maison.accueil.camera_actualiser', { nom: title })}>
++  {#if src}
++    <img {src} alt={title} />
++  {:else}
++    <span class="wait"><Icon name="cctv" size={22} /></span>
++  {/if}
++  <span class="tag" class:off={!online || failed}><i></i>{title}</span>
++</button>
++
++<style>
++  .cam {
++    all: unset;
++    box-sizing: border-box;
++    position: relative;
++    display: block;
++    height: 120px;
++    border-radius: var(--r-md);
++    overflow: hidden;
++    background: #111621;
++    box-shadow: var(--shadow);
++    cursor: pointer;
++    transition: box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
++  }
++
++  .cam:hover {
++    transform: translateY(-1px);
++    box-shadow: var(--shadow-lift);
++  }
++
++  /* Empilée sous les poubelles sur un téléphone : un bandeau de 120 px de
++     haut sur toute la largeur n'a plus rien d'une vignette de caméra. */
++  @media (max-width: 520px) {
++    .cam {
++      height: auto;
++      aspect-ratio: 16 / 9;
++    }
++  }
++
++  .cam:focus-visible {
++    outline: 3px solid var(--cool);
++    outline-offset: 3px;
++  }
++
++  img {
++    width: 100%;
++    height: 100%;
++    object-fit: cover;
++    display: block;
++  }
++
++  .wait {
++    position: absolute;
++    inset: 0;
++    display: grid;
++    place-items: center;
++    color: #8a93a8;
++  }
++
++  .tag {
++    position: absolute;
++    left: 8px;
++    bottom: 8px;
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++    padding: 4px 10px 4px 8px;
++    border-radius: 999px;
++    background: rgb(10 14 22 / 55%);
++    backdrop-filter: blur(6px);
++    color: #fff;
++    font-size: 12px;
++    font-weight: 650;
++    max-width: calc(100% - 16px);
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
++  }
++
++  .tag i {
++    flex: none;
++    width: 7px;
++    height: 7px;
++    border-radius: 50%;
++    background: #3ddc97;
++    box-shadow: 0 0 0 3px rgb(61 220 151 / 25%);
++  }
++
++  .tag.off i {
++    background: #8a93a8;
++    box-shadow: none;
++  }
++
++  .cam.on .tag i {
++    background: var(--warm);
++    box-shadow: 0 0 0 3px rgb(245 174 76 / 25%);
++  }
++</style>
+diff --git a/web/src/maison/ui/HeatingBar.svelte b/web/src/maison/ui/HeatingBar.svelte
+--- a/web/src/maison/ui/HeatingBar.svelte
++++ b/web/src/maison/ui/HeatingBar.svelte
+@@ -44,21 +44,19 @@
+ </script>
+ 
+ {#if id}
+-  <section class="card heating" aria-label={t('maison.accueil.chauffage')}>
+-    {#if local != null}
+-      <div class="head">
+-        <span class="now num">{t('maison.accueil.chauffage_ambiance', { temp: Math.round(Number(local)) })}</span>
+-      </div>
+-    {/if}
++  <section class="heating" aria-label={t('maison.accueil.chauffage')}>
++    <span class="title">
++      <Icon name="fire" size={15} />{t('maison.accueil.chauffage')}{#if local != null}<em class="num">{Math.round(Number(local))}°</em>{/if}
++    </span>
+     <div class="buttons" role="radiogroup" aria-label={t('maison.accueil.chauffage')}>
+       <button role="radio" aria-checked={current === 'confort'} class:on={current === 'confort'} disabled={busy} onclick={() => choose('confort')}>
+-        <Icon name="fire" size={16} />{t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
++        {t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
+       </button>
+       <button role="radio" aria-checked={current === 'reduit'} class:on={current === 'reduit'} disabled={busy} onclick={() => choose('reduit')}>
+-        <Icon name="moon" size={16} />{t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
++        {t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
+       </button>
+       <button role="radio" aria-checked={current === 'arret'} class:on={current === 'arret'} disabled={busy} onclick={() => choose('arret')}>
+-        <Icon name="power" size={16} />{t('maison.accueil.chauffage_arret')}
++        {t('maison.accueil.chauffage_arret')}
+       </button>
+     </div>
+   </section>
+@@ -66,49 +64,52 @@
+ 
+ <style>
+   .heating {
+-    display: grid;
+-    gap: 12px;
+-  }
+-
+-  .head {
+     display: flex;
+-    align-items: baseline;
+-    justify-content: space-between;
++    align-items: center;
+     gap: 10px;
++    height: 36px;
++    min-width: 0;
+   }
+ 
+-  .head h2 {
++  .title {
++    flex: none;
+     display: inline-flex;
+     align-items: center;
+-    gap: 8px;
+-    font-size: 16px;
++    gap: 6px;
++    font-size: 13px;
+     font-weight: 700;
++    color: var(--ink-3);
+   }
+ 
+-  .now {
+-    font-size: 13px;
+-    font-weight: 600;
+-    color: var(--ink-3);
++  .title em {
++    font-style: normal;
++    color: var(--ink-2);
+   }
+ 
+   .buttons {
+     display: flex;
+-    gap: 8px;
+-    flex-wrap: wrap;
++    align-items: center;
++    gap: 6px;
++    min-width: 0;
++    overflow-x: auto;
++    scrollbar-width: none;
+   }
+ 
+   .buttons button {
++    flex: none;
+     display: inline-flex;
+     align-items: center;
+-    gap: 7px;
++    gap: 5px;
+     border: 0;
+     border-radius: 999px;
+-    padding: 9px 15px;
++    padding: 0 12px;
++    height: 36px;
+     font: inherit;
+-    font-size: 14px;
++    font-size: 13px;
+     font-weight: 650;
+-    background: var(--surface-2);
++    background: var(--surface);
+     color: var(--ink-3);
++    box-shadow: var(--shadow);
+     cursor: pointer;
+     transition: background 0.2s var(--ease), color 0.2s var(--ease);
+   }
+diff --git a/web/src/maison/ui/PoolCard.svelte b/web/src/maison/ui/PoolCard.svelte
+--- a/web/src/maison/ui/PoolCard.svelte
++++ b/web/src/maison/ui/PoolCard.svelte
+@@ -1,6 +1,9 @@
+ <script>
++  // La piscine, en une carte de 62 px : la température de l'eau, la pompe,
++  // et le coup d'œil quand la sonde le demande. Un tap ouvre Dehors.
+   import { home, value, num, isOn, reachable, device, powerKey } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
+ 
+   const out = $derived(home.config?.outdoor ?? {});
+   const pool = $derived(out.pool);
+@@ -11,49 +14,65 @@
+ </script>
+ 
+ <a class="card pool" href="#/dehors" aria-label={t('maison.accueil.piscine_ouvrir')}>
+-  {#if look === true || look === false}
+-    <div class="card-head">
+-      {#if look === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
+-    </div>
+-  {/if}
+-  <div class="facts">
+-    <div><small>{t('maison.dehors.eau')}</small><b class="num">{temp != null ? `${num(temp, 1)}°` : '—'}</b></div>
+-    <div>
+-      <small>{t('maison.accueil.piscine_pompe')}</small>
+-      <b>{pumpKnown ? (isOn(pumpId) ? t('maison.accueil.piscine_marche') : t('maison.accueil.piscine_arret')) : '—'}</b>
+-    </div>
+-  </div>
++  <span class="ico"><Icon name="pool" size={19} /></span>
++  <span class="words">
++    <b>{t('maison.accueil.piscine_titre')}</b>
++    <small>{pumpKnown ? (isOn(pumpId) ? t('maison.accueil.piscine_marche') : t('maison.accueil.piscine_arret')) : '—'}</small>
++  </span>
++  <span class="facts">
++    <b class="num">{temp != null ? `${num(temp, 1)}°` : '—'}</b>
++    {#if look === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else if look === false}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
++  </span>
+ </a>
+ 
+ <style>
+   .pool {
+-    display: block;
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    height: 62px;
++    padding: 0 14px;
+     color: inherit;
+     text-decoration: none;
+-    transition: transform 0.2s var(--ease);
+   }
+ 
+-  .pool:hover {
+-    transform: translateY(-2px);
++  .ico {
++    flex: none;
++    display: grid;
++    place-items: center;
++    width: 34px;
++    height: 34px;
++    border-radius: 999px;
++    background: var(--cool-soft);
++    color: var(--cool);
+   }
+ 
+-
+-  .facts {
++  .words {
+     display: grid;
+-    grid-template-columns: 1fr 1fr;
+-    gap: 8px;
+-    margin-top: 14px;
++    gap: 1px;
++    min-width: 0;
++    flex: 1 1 auto;
++  }
++
++  .words b {
++    font-size: 14px;
++    font-weight: 700;
+   }
+ 
+-  .facts small {
+-    display: block;
+-    font-size: 11px;
++  .words small {
++    font-size: 12px;
+     color: var(--ink-3);
+-    font-weight: 650;
++  }
++
++  .facts {
++    display: inline-flex;
++    align-items: center;
++    gap: 8px;
++    flex: none;
+   }
+ 
+   .facts b {
+-    font-size: 17px;
+-    font-weight: 650;
++    font-size: 18px;
++    font-weight: 750;
+   }
+ </style>
+diff --git a/web/src/maison/ui/TabletteRow.svelte b/web/src/maison/ui/TabletteRow.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/TabletteRow.svelte
+@@ -0,0 +1,171 @@
++<script>
++  // Une rangée de la tablette : un nom, l'appareil qui la commande, et ses
++  // lectures en pastilles (température, humidité, vitesse, consommation).
++  // C'est l'équivalent Moli des « bubble card » de la tablette Home
++  // Assistant : 56 px de haut, tout tient sur une ligne, un tap commande.
++  import { device, isOn, pending, reachable, toggle, value, nameOf } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  /** `subs` : pastilles de lecture, `{ icon, text, tone }`. `level` : la
++   *  grandeur montrée en pourcentage quand la commande est allumée. */
++  let { id, name = null, icon = 'light', subs = [], level = null, toggles = true } = $props();
++
++  const d = $derived(device(id));
++  const ok = $derived(reachable(id));
++  const on = $derived(ok && isOn(id));
++  const busy = $derived(pending(id));
++  const label = $derived(nameOf(id, name));
++  const pct = $derived(level ? value(id, level) : null);
++
++  function tap() {
++    if (!toggles || !ok) return;
++    toggle(id, label);
++  }
++</script>
++
++<div class="row" class:on class:off={!ok}>
++  {#if toggles}
++    <button class="main" aria-pressed={on} disabled={busy || !ok} onclick={tap} title={label}>
++      <span class="ico"><Icon name={icon} size={18} /></span>
++      <span class="name">{label}</span>
++      {#if pct != null && on}<span class="lvl num">{Math.round(Number(pct))} %</span>{/if}
++    </button>
++  {:else}
++    <span class="main static" title={label}>
++      <span class="ico"><Icon name={icon} size={18} /></span>
++      <span class="name">{label}</span>
++      {#if pct != null}<span class="lvl num">{Math.round(Number(pct))} %</span>{/if}
++    </span>
++  {/if}
++
++  <span class="subs">
++    {#each subs as s (s.icon + s.text)}
++      <span class="sub {s.tone ?? ''}" title={s.title ?? s.text}><Icon name={s.icon} size={13} />{s.text}</span>
++    {/each}
++  </span>
++</div>
++
++<style>
++  .row {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    height: 56px;
++    padding: 0 14px 0 10px;
++    border-radius: var(--r-md);
++    background: var(--surface);
++    box-shadow: var(--shadow);
++    min-width: 0;
++  }
++
++  .main {
++    display: inline-flex;
++    align-items: center;
++    gap: 10px;
++    min-width: 0;
++    flex: 1 1 auto;
++    border: 0;
++    border-radius: 12px;
++    padding: 4px 6px;
++    background: none;
++    color: inherit;
++    font: inherit;
++    cursor: pointer;
++    text-align: left;
++  }
++
++  .main.static {
++    cursor: default;
++  }
++
++  .main:disabled {
++    cursor: default;
++  }
++
++  @media (hover: hover) {
++    .main:not(.static):not(:disabled):hover {
++      background: var(--surface-2);
++    }
++
++    .row.off:hover .main {
++      background: none;
++    }
++  }
++
++  .ico {
++    flex: none;
++    display: grid;
++    place-items: center;
++    width: 32px;
++    height: 32px;
++    border-radius: 999px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    transition: background 0.2s var(--ease), color 0.2s var(--ease);
++  }
++
++  .on .ico {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .off .ico {
++    opacity: 0.55;
++  }
++
++  .off .name {
++    color: var(--ink-3);
++  }
++
++  .name {
++    font-size: 14px;
++    font-weight: 700;
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
++  }
++
++  .lvl {
++    font-size: 12px;
++    font-weight: 700;
++    color: var(--ink-3);
++  }
++
++  .subs {
++    display: flex;
++    align-items: center;
++    justify-content: end;
++    gap: 6px;
++    min-width: 0;
++    overflow: hidden;
++  }
++
++  .sub {
++    display: inline-flex;
++    align-items: center;
++    gap: 4px;
++    padding: 3px 8px;
++    border-radius: 999px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    font-size: 12px;
++    font-weight: 650;
++    white-space: nowrap;
++  }
++
++  .sub.warm {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .sub.cool {
++    background: var(--cool-soft);
++    color: var(--cool);
++  }
++
++  .sub.good {
++    background: var(--good-soft);
++    color: var(--good);
++  }
++</style>
+diff --git a/web/src/maison/ui/TabletteRows.svelte b/web/src/maison/ui/TabletteRows.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/TabletteRows.svelte
+@@ -0,0 +1,149 @@
++<script>
++  // La pile de rangées de la tablette (colonne de gauche) : une rangée par
++  // appareil commandé depuis l'Accueil, avec ses lectures en pastilles —
++  // l'équivalent Moli des « bubble card » de Home Assistant.
++  //
++  // La liste vient de `data/home.json` (`tablette.rows`) : c'est la maison
++  // qui nomme ses appareils, pas le code. Une entrée porte un `room` (on
++  // prend le premier appareil de la pièce), ou un `match` (expression
++  // régulière sur le nom), ou un `id` explicite ; `kind` filtre le genre,
++  // `pair` met deux rangées côte à côte, `toggles: false` rend la rangée
++  // en lecture seule, `level` affiche un pourcentage, `power` ajoute la
++  // consommation d'une pince du Linky.
++  import { home, hub, value, device, nameOf, roomOf, deviceKind, tempIgnored } from '../lib/home.svelte.js';
++  import { t } from '../../lib/i18n.svelte.js';
++  import TabletteRow from './TabletteRow.svelte';
++
++  const norm = (s) =>
++    String(s ?? '')
++      .normalize('NFD')
++      .replace(/\p{M}/gu, '')
++      .toLowerCase();
++
++  const devices = $derived(Object.values(hub.devices));
++
++  const byId = (id) => devices.find((d) => d.id === id) ?? null;
++
++  /** Le premier appareil de la pièce qui passe `test` (kind facultatif). */
++  function pick(room, test, kind = null) {
++    const inRoom = devices.filter((d) => norm(roomOf(d)) === norm(room));
++    const pool = kind ? inRoom.filter((d) => deviceKind(d) === kind) : inRoom;
++    return pool.find(test) ?? null;
++  }
++
++  /** L'appareil d'une rangée : par identifiant, par nom, ou par pièce. */
++  function resolve(def) {
++    if (def.id) return byId(def.id);
++    if (def.match) {
++      const re = new RegExp(def.match, 'i');
++      const hit = devices.filter((d) => re.test(nameOf(d.id)) && (!def.kind || deviceKind(d) === def.kind));
++      // Une pièce Hue entière avant ses lampes : on commande le groupe.
++      return (def.group ? hit.find((d) => (d.members ?? []).length > 1) : null) ?? hit[0] ?? null;
++    }
++    if (!def.room) return null;
++    return pick(def.room, () => true, def.kind ?? null);
++  }
++
++  /** Le capteur d'une pièce : température, et humidité quand il la sait. */
++  function sensorOf(room) {
++    if (!room) return null;
++    return pick(
++      room,
++      (d) => {
++        const keys = d.points.map((p) => p.key);
++        return keys.includes('temperature') && !tempIgnored(room).has(d.id);
++      },
++      'sensor',
++    );
++  }
++
++  const readings = (sensor, extra = null) => {
++    if (!sensor) return extra == null ? [] : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: 'cool' }];
++    const list = [];
++    const temp = value(sensor.id, 'temperature') ?? value(sensor.id, 'temp_current');
++    const hum = value(sensor.id, 'humidity') ?? value(sensor.id, 'humidity_value');
++    if (typeof temp === 'number') list.push({ icon: 'thermometer', text: `${temp.toFixed(1)}°` });
++    if (typeof hum === 'number') list.push({ icon: 'humidity', text: `${Math.round(hum)} %` });
++    if (extra != null && Number.isFinite(Number(extra))) list.push({ icon: 'flash', text: `${Math.round(Math.abs(Number(extra)))} W`, tone: 'cool' });
++    return list;
++  };
++
++  /** La vitesse du ventilateur d'une rangée, quand il en a une. */
++  function fanOf(d) {
++    if (!d) return null;
++    const fan = [d.id, ...(d.members ?? [])].map((m) => device(m)).find((x) => x?.points.some((p) => p.key === 'fan_speed'));
++    const v = fan ? value(fan.id, 'fan_speed') : null;
++    return typeof v === 'number' ? { icon: 'fan', text: `${v} %` } : null;
++  }
++
++  // Une rangée prête à rendre : l'appareil résolu, son nom, ses pastilles.
++  // Une entrée introuvable (appareil absent, pièce vide) est sautée : pas
++  // de rangée fantôme.
++  const rows = $derived.by(() =>
++    (home.config?.tablette?.rows ?? []).flatMap((def) => {
++      const d = resolve(def);
++      if (!d) return [];
++      const extra = def.power ? value(home.config?.badges?.linky ?? 'linky:linky', def.power) : null;
++      const fan = fanOf(d);
++      const label = def.nkey ? t(def.nkey) : (def.name ?? nameOf(d.id));
++      return [
++        {
++          key: def.id ?? def.match ?? def.room ?? label,
++          id: d.id,
++          label,
++          icon: def.icon ?? 'light',
++          level: def.level ?? null,
++          toggles: def.toggles !== false,
++          pair: def.pair === true,
++          subs: [...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra)],
++        },
++      ];
++    }),
++  );
++
++  // Les rangées consécutives marquées `pair` forment un groupe côte à côte.
++  const groups = $derived.by(() => {
++    const out = [];
++    for (const r of rows) {
++      const last = out.at(-1);
++      if (r.pair && last?.pair) last.items.push(r);
++      else out.push({ pair: r.pair, items: [r] });
++    }
++    return out;
++  });
++</script>
++
++<div class="rows" aria-label={t('maison.accueil.tablette_lignes')} role="group">
++  {#each groups as g, i (i)}
++    {#if g.pair}
++      <div class="pair">
++        {#each g.items as r (r.key)}
++          <TabletteRow id={r.id} name={r.label} icon={r.icon} level={r.level} toggles={r.toggles} subs={r.subs} />
++        {/each}
++      </div>
++    {:else}
++      {#each g.items as r (r.key)}
++        <TabletteRow id={r.id} name={r.label} icon={r.icon} level={r.level} toggles={r.toggles} subs={r.subs} />
++      {/each}
++    {/if}
++  {/each}
++</div>
++
++<style>
++  .rows {
++    display: grid;
++    gap: 8px;
++  }
++
++  .pair {
++    display: grid;
++    grid-template-columns: 1fr 1fr;
++    gap: 12px;
++  }
++
++  @media (max-width: 760px) {
++    .pair {
++      grid-template-columns: 1fr;
++    }
++  }
++</style>
+diff --git a/web/src/maison/ui/WeatherNow.svelte b/web/src/maison/ui/WeatherNow.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/WeatherNow.svelte
+@@ -0,0 +1,62 @@
++<script>
++  // La météo du moment, en une ligne (38 px) : le ciel, la température, le
++  // libellé et les extrêmes du jour. C'est la carte « conditions » de la
++  // tablette, réduite à ce qu'on lit d'un coup d'œil.
++  import { home, value, num } from '../lib/home.svelte.js';
++  import { watchSky } from '../lib/sky.svelte.js';
++  import { weatherOf } from '../lib/icons.js';
++  import { onMount } from 'svelte';
++  import Icon from './Icon.svelte';
++
++  const out = $derived(home.config?.outdoor ?? {});
++  const w = $derived(out.weather);
++  const day = $derived(value(w, 'daylight') !== false);
++  const now = $derived(weatherOf(value(w, 'weather_code'), day));
++
++  onMount(() => watchSky());
++</script>
++
++{#if w}
++  <section class="now" aria-label={now.label}>
++    <Icon path={now.icon} size={20} />
++    <b class="num">{num(value(w, 'temperature'), 0)}°</b>
++    <span class="label">{now.label}</span>
++    <span class="range num">↑ {num(value(w, 'today_max'), 0)}° ↓ {num(value(w, 'today_min'), 0)}°</span>
++  </section>
++{/if}
++
++<style>
++  .now {
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    height: 38px;
++    padding: 0 14px;
++    border-radius: var(--r-sm);
++    background: var(--surface);
++    box-shadow: var(--shadow);
++    color: var(--ink-2);
++    min-width: 0;
++  }
++
++  .now b {
++    font-size: 16px;
++    font-weight: 750;
++    color: var(--ink);
++  }
++
++  .label {
++    font-size: 13px;
++    font-weight: 650;
++    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
++  }
++
++  .range {
++    margin-left: auto;
++    flex: none;
++    font-size: 12px;
++    color: var(--ink-3);
++  }
++</style>
+diff --git a/web/src/maison/ui/WeekWeather.svelte b/web/src/maison/ui/WeekWeather.svelte
+--- a/web/src/maison/ui/WeekWeather.svelte
++++ b/web/src/maison/ui/WeekWeather.svelte
+@@ -26,7 +26,7 @@
+         {@const s = weatherOf(d.code, true)}
+         <li>
+           <small class="dow">{dayName(d.date, i)}</small>
+-          <span class="ico" title={s.label}><Icon path={s.icon} size={22} /></span>
++          <span class="ico" title={s.label}><Icon path={s.icon} size={18} /></span>
+           <span class="min num">{num(d.min, 0)}°</span>
+           <i class="bar" aria-hidden="true">
+             <i style="left:{((d.min - lo) / span) * 100}%; right:{((hi - d.max) / span) * 100}%"></i>
+@@ -42,25 +42,26 @@
+ <style>
+   .week {
+     display: grid;
+-    gap: 10px;
++    gap: 6px;
++    padding: 10px 12px;
+   }
+ 
+-
+   .rows {
+     list-style: none;
+     margin: 0;
+     padding: 0;
+     display: grid;
+-    gap: 2px;
++    gap: 0;
+   }
+ 
+   .rows li {
+     display: grid;
+-    grid-template-columns: 42px 30px 40px minmax(60px, 1fr) 40px 44px;
++    grid-template-columns: 42px 28px 38px minmax(60px, 1fr) 38px 42px;
+     align-items: center;
+-    gap: 10px;
+-    padding: 5px 6px;
+-    border-radius: 12px;
++    gap: 8px;
++    padding: 1px 6px;
++    border-radius: 10px;
++    min-height: 24px;
+   }
+ 
+   .rows li:first-child {
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -34,16 +34,10 @@
+   "maison.accueil.pluie": "rain {pct}%",
+   "maison.accueil.coucher": "Sunset {time}",
+   "maison.accueil.lever": "Sunrise {time}",
+-  "maison.accueil.lumieres": "Lights",
+   "maison.accueil.allumees_one": "{count} on",
+   "maison.accueil.allumees_other": "{count} on",
+   "maison.accueil.tout_eteint": "all off",
+-  "maison.accueil.ambiance": "Mood",
+   "maison.accueil.piece": "Room",
+-  "maison.accueil.clim": "Air conditioning",
+-  "maison.accueil.devant_porte": "At the door",
+-  "maison.accueil.dernier_passage": "Last seen {when}",
+-  "maison.accueil.personne": "No one for two days",
+   "maison.air.tres_bon": "Very good",
+   "maison.air.bon": "Good",
+   "maison.air.moyen": "Moderate",
+@@ -196,13 +190,7 @@
+   "maison.meteo.legende_vent": "Wind (light → strong)",
+   "maison.meteo.credit": "Forecast by Open-Meteo. The orange dot is the house.",
+   "maison.accueil.badges": "Badges",
+-  "maison.accueil.badges_portes_one": "{count} door open",
+-  "maison.accueil.badges_portes_other": "{count} doors open",
+-  "maison.accueil.badges_portes_fermees": "Doors closed",
+-  "maison.accueil.badges_portes_muettes": "Doors: unknown state",
+-  "maison.accueil.badges_conso": "{value} live",
+   "maison.accueil.badges_tempo": "EDF Tempo colour",
+-  "maison.accueil.badges_tempo_jour": "today",
+   "maison.accueil.badges_tempo_demain": "tom.",
+   "maison.tempo.bleu": "blue",
+   "maison.tempo.blanc": "white",
+@@ -211,21 +199,19 @@
+   "maison.accueil.plan_ouvrir": "Open the plan",
+   "maison.accueil.plan_vide": "No plan yet.",
+   "maison.accueil.piscine_ouvrir": "Open the pool",
+-  "maison.accueil.piscine_pompe": "Pump",
+   "maison.accueil.piscine_marche": "Running",
+   "maison.accueil.piscine_arret": "Stopped",
+   "maison.accueil.pieces_titre": "Rooms",
+   "maison.accueil.sans_mesure": "no reading",
+   "maison.accueil.semaine": "The week",
+   "maison.accueil.chauffage": "Heating setpoint",
+-  "maison.accueil.chauffage_ambiance": "{temp}° in the room",
+   "maison.accueil.chauffage_confort": "Comfort",
+   "maison.accueil.chauffage_reduit": "Setback",
+   "maison.accueil.chauffage_arret": "Off",
+   "maison.accueil.poubelles": "Bins",
+   "maison.accueil.poubelle_demain": "Tomorrow",
++  "maison.accueil.poubelle_j_moins": "D-{n}",
+   "maison.accueil.poubelle_aujourdhui": "Today",
+-  "maison.accueil.poubelle_dans": "In {n} d",
+   "maison.accueil.poubelle_jaune": "Yellow (recycling)",
+   "maison.accueil.poubelle_noire": "Black (household)",
+   "maison.accueil.poubelle_ouvrir": "Open the bins",
+@@ -235,5 +221,27 @@
+   "maison.wifi.sous_titre": "Join the house network",
+   "maison.wifi.bbox": "Bbox — 2.4 GHz Wi-Fi",
+   "maison.wifi.mercusys": "Mercusys — repeater",
+-  "maison.wifi.scan": "Scan with your phone camera to join the network."
++  "maison.wifi.scan": "Scan with your phone camera to join the network.",
++  "maison.accueil.badge_alarme_indisponible": "{name} — no Moli driver",
++  "maison.accueil.alarme_maison": "House alarm",
++  "maison.accueil.alarme_grange": "Barn alarm",
++  "maison.accueil.badge_baie": "Patio door",
++  "maison.accueil.badge_atelier": "Workshop",
++  "maison.accueil.badge_grange": "Barn",
++  "maison.accueil.badge_boite": "Mailbox",
++  "maison.accueil.badge_contact_inconnu": "Contact: unknown state",
++  "maison.accueil.badge_appart": "Flat power draw",
++  "maison.accueil.badge_residuel": "Rest of the house draw",
++  "maison.accueil.poubelle_jaune_court": "Recycling",
++  "maison.accueil.poubelle_noire_court": "Household",
++  "maison.accueil.tablette_lignes": "Rooms",
++  "maison.accueil.appart": "Flat",
++  "maison.accueil.cave": "Wine cellar",
++  "maison.accueil.piscine_titre": "Pool",
++  "maison.accueil.batterie": "Battery",
++  "maison.accueil.batterie_absente": "No battery tracked by Moli",
++  "maison.accueil.batterie_source": "Source {source}",
++  "maison.accueil.couloir": "Hallway",
++  "maison.accueil.camera": "Camera",
++  "maison.accueil.camera_actualiser": "Refresh the {nom} image"
+ }
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -34,21 +34,14 @@
+   "maison.accueil.pluie": "pluie {pct} %",
+   "maison.accueil.coucher": "Coucher {time}",
+   "maison.accueil.lever": "Lever {time}",
+-  "maison.accueil.lumieres": "Lumières",
+   "maison.accueil.allumees_one": "{count} allumée",
+   "maison.accueil.allumees_other": "{count} allumées",
+   "maison.accueil.tout_eteint": "tout est éteint",
+-  "maison.accueil.ambiance": "Ambiance",
+   "maison.accueil.piece": "Pièce",
+-  "maison.accueil.clim": "Climatisation",
+-  "maison.accueil.devant_porte": "Devant la porte",
+-  "maison.accueil.dernier_passage": "Dernier passage {when}",
+-  "maison.accueil.personne": "Personne depuis deux jours",
+   "maison.accueil.pieces_titre": "Pièces",
+   "maison.accueil.sans_mesure": "pas de mesure",
+   "maison.accueil.semaine": "La semaine",
+   "maison.accueil.chauffage": "Consigne chauffage",
+-  "maison.accueil.chauffage_ambiance": "{temp}° dans la pièce",
+   "maison.accueil.chauffage_confort": "Confort",
+   "maison.accueil.chauffage_reduit": "Réduit",
+   "maison.accueil.chauffage_arret": "Arrêt",
+@@ -204,13 +197,7 @@
+   "maison.meteo.legende_vent": "Vent (faible → fort)",
+   "maison.meteo.credit": "Prévisions Open-Meteo. Le point orange, c’est la maison.",
+   "maison.accueil.badges": "Badges",
+-  "maison.accueil.badges_portes_one": "{count} porte ouverte",
+-  "maison.accueil.badges_portes_other": "{count} portes ouvertes",
+-  "maison.accueil.badges_portes_fermees": "Portes fermées",
+-  "maison.accueil.badges_portes_muettes": "Portes : état inconnu",
+-  "maison.accueil.badges_conso": "{value} en direct",
+   "maison.accueil.badges_tempo": "Couleur Tempo EDF",
+-  "maison.accueil.badges_tempo_jour": "auj.",
+   "maison.accueil.badges_tempo_demain": "dem.",
+   "maison.tempo.bleu": "bleu",
+   "maison.tempo.blanc": "blanc",
+@@ -219,13 +206,12 @@
+   "maison.accueil.plan_ouvrir": "Ouvrir le plan",
+   "maison.accueil.plan_vide": "Aucun plan pour l’instant.",
+   "maison.accueil.piscine_ouvrir": "Ouvrir la piscine",
+-  "maison.accueil.piscine_pompe": "Pompe",
+   "maison.accueil.piscine_marche": "En marche",
+   "maison.accueil.piscine_arret": "Arrêtée",
+   "maison.accueil.poubelles": "Poubelles",
+   "maison.accueil.poubelle_demain": "Demain",
++  "maison.accueil.poubelle_j_moins": "J-{n}",
+   "maison.accueil.poubelle_aujourdhui": "Aujourd’hui",
+-  "maison.accueil.poubelle_dans": "Dans {n} j",
+   "maison.accueil.poubelle_jaune": "Jaune (recyclable)",
+   "maison.accueil.poubelle_noire": "Noire (ménager)",
+   "maison.accueil.poubelle_ouvrir": "Ouvrir les poubelles",
+@@ -235,5 +221,27 @@
+   "maison.wifi.sous_titre": "Se connecter au réseau de la maison",
+   "maison.wifi.bbox": "Bbox — Wi-Fi 2,4 GHz",
+   "maison.wifi.mercusys": "Mercusys — répéteur",
+-  "maison.wifi.scan": "Scannez avec l’appareil photo du téléphone pour rejoindre le réseau."
++  "maison.wifi.scan": "Scannez avec l’appareil photo du téléphone pour rejoindre le réseau.",
++  "maison.accueil.badge_alarme_indisponible": "{name} — pas de pilote Moli",
++  "maison.accueil.alarme_maison": "Alarme maison",
++  "maison.accueil.alarme_grange": "Alarme grange",
++  "maison.accueil.badge_baie": "Baie vitrée",
++  "maison.accueil.badge_atelier": "Atelier",
++  "maison.accueil.badge_grange": "Grange",
++  "maison.accueil.badge_boite": "Boîte aux lettres",
++  "maison.accueil.badge_contact_inconnu": "Contact : état inconnu",
++  "maison.accueil.badge_appart": "Puissance de l'appartement",
++  "maison.accueil.badge_residuel": "Puissance du reste de la maison",
++  "maison.accueil.poubelle_jaune_court": "Recyclage",
++  "maison.accueil.poubelle_noire_court": "Ordures",
++  "maison.accueil.tablette_lignes": "Pièces",
++  "maison.accueil.appart": "Appart",
++  "maison.accueil.cave": "Cave à Vins",
++  "maison.accueil.piscine_titre": "Piscine",
++  "maison.accueil.batterie": "Batterie",
++  "maison.accueil.batterie_absente": "Aucune batterie suivie par Moli",
++  "maison.accueil.batterie_source": "Source {source}",
++  "maison.accueil.couloir": "Couloir",
++  "maison.accueil.camera": "Caméra",
++  "maison.accueil.camera_actualiser": "Actualiser l'image de {nom}"
+ }

@@ -8,3 +8,9 @@ __pycache__/
 # OS / editor noise
 .DS_Store
 *.swp
+
+# Local working copies of the Moli source (never part of the anchor)
+work/
+
+# OpenFox session config
+.openfox/
