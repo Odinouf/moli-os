@@ -183,10 +183,11 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 | 4 | `accueil-tablette2025-pixel.patch` | `notes/accueil-tablette2025-pixel.md` — refonte `Accueil.svelte` + 5 composants |
 | 5 | `accueil-plan-pins.patch` | `notes/accueil-plan-pins.md` — jetons réduits, sans relevés, filtrés |
 | 6 | `chauffage-trv.patch` | `notes/chauffage-trv.md` — hors Accueil, page `#/chauffage` |
+| 7 | `chauffage-trv-zones.patch` | `notes/chauffage-trv.md` — axe horaire, paliers nommés Confort/Réduit/Personnalisé, édition sur place |
 
 `accueil-tablette2025-pixel` **doit** passer après `accueil-plan-hero` : sur une base
 `parity` seule il échoue (`Accueil.svelte:190`), la carte Plan devant déjà être dans
-`SkyHero`. Appliquer les six dans cet ordre, sans en sauter un.
+`SkyHero`. Appliquer les sept dans cet ordre, sans en sauter un.
 
 **`accueil-plan-pins.patch`** : sur la carte Plan de l'Accueil, **retire les relevés**
 (pas de `.reading` : `pinReading` n'est plus importé), **réduit les jetons** (34 → 22 px,
@@ -210,6 +211,16 @@ avec, par vanne thermostatique, la consigne, la **table horaire hebdomadaire** �
 (une TRV expose `occupied_heating_setpoint`, pas `target_temperature`) et aligne le bandeau
 `HeatingBar` sur la **variante B** : il n'écrit plus que la consigne, laissant à la valve son
 override temporaire natif. Aucun fichier `crates/` touché. Voir `notes/chauffage-trv.md`.
+
+Puis `chauffage-trv-zones.patch` (n° 7, par-dessus le n° 6) : la table devient lisible
+(**axe** `00h / 06h / 12h / 18h / 24h` aligné sur les pistes, grille d'heures en fond,
+**heure de début dans chaque palier** assez large, liseré de séparation) et
+programmable (**tout le palier est cliquable**, bloc d'édition sous le jour concerné,
+bouton **+** par jour plutôt qu'une insertion au clic invisible). Les paliers sont
+**nommés** d'après `home.config.heating` — Confort 18.5°, Réduit 16°, sinon
+Personnalisé (`levelOf()` dans `schedule.js`, tolérance 0.25°) — avec deux boutons
+d'application directe. La vérité reste le texte `HH:MM/<deg>` de la valve : rien de
+persisté en plus, `MAX_BLOCKS = 6` inchangé (c'est la limite matérielle du TRVZB).
 
 ### 6. Montée de version
 
@@ -293,7 +304,7 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `accueil-plan-scale.md` | Échelle des pins du Plan de l'Accueil (`PlanPreview`) : jetons 34 px, lectures 12 px, anti-chevauchement — patch `accueil-plan-scale` (n° 2 de la chaîne) — **superseded par `accueil-plan-pins`** (§ Supersession) |
 | `accueil-tablette2025-pixel.md` | Refonte du tableau de bord tablette : `Accueil.svelte` réécrit + 5 composants (`BatteryGauge`, `CameraCard`, `TabletteRow(s)`, `WeatherNow`) — patch `accueil-tablette2025-pixel` (n° 4 de la chaîne, **après** `accueil-plan-hero`) |
 | `accueil-plan-pins.md` | Jetons du Plan de l'Accueil réduits (22 px) **sans aucun relevé**, filtrés sur les appareils utiles (16 → 8) — patch `accueil-plan-pins` (n° 5 de la chaîne) |
-| `chauffage-trv.md` | Page **Chauffage** : consigne, table horaire hebdomadaire (7 pistes, 15 min) et choix programme/automatisations/éteinte par vanne — patch `chauffage-trv` (n° 6 de la chaîne, hors Accueil) |
+| `chauffage-trv.md` | Page **Chauffage** : consigne, table horaire hebdomadaire (7 pistes, 15 min) et choix programme/automatisations/éteinte par vanne — patch `chauffage-trv` (n° 6) + `chauffage-trv-zones` (n° 7 : axe horaire, paliers Confort/Réduit/Personnalisé, édition sur place) |
 | `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero` (n° 3 de la chaîne) |
 | `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
 | `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |

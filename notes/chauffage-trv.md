@@ -3,7 +3,50 @@
 Page **Chauffage** dans le dashboard Moli : consigne, table horaire hebdomadaire et
 choix de qui pilote la vanne. Patch `notes/patches/chauffage-trv.patch`, appliqué
 sur la base `tablette2025-parity` + `accueil-plan-scale` + `accueil-plan-hero` +
-`accueil-plan-pins`.
+`accueil-plan-pins`, puis `notes/patches/chauffage-trv-zones.patch` par-dessus.
+
+## Zones horaires nommées (patch `chauffage-trv-zones`, n° 7 de la chaîne)
+
+La vanne TRVZB ne stocke que des paliers `HH:MM/<degré>` (6 par jour au plus) : un
+« niveau » n'est **pas** un objet persisté côté appareil. Le patch nomme donc les
+paliers à la lecture, contre `home.config.heating` — aucune écriture en plus, aucun
+état serveur :
+
+| Niveau | Source | Rendu |
+|---|---|---|
+| Confort | `heating.confort` (18.5°) | pastille + libellé dans le bloc d'édition |
+| Réduit | `heating.reduit` (16°) | idem |
+| Personnalisé | toute autre consigne | libellé seul, sans bouton |
+
+`levelOf(deg, confort, reduit)` (dans `web/src/maison/lib/schedule.js`, pur, couvert
+par `schedule.test.js`) classe un palier avec une tolérance de 0.25° : la valve
+arrondit au demi-degré. `ScheduleEditor` reçoit désormais `confort` / `reduit` de
+`ValveCard` (qui les lit déjà dans la config de la maison).
+
+Le même patch rend la table lisible et programmable :
+
+- **Axe horaire** (`00h / 06h / 12h / 18h / 24h`) aligné sur les pistes, et grille
+  d'heures en fond de piste (1 h léger, 6 h marqué).
+- **Heure de début dans le palier** (`07:00 · 19°`) quand le palier est assez large
+  pour la porter — la place est mesurée sur la piste (`ResizeObserver` posé une fois
+  sur la semaine, pas une fois par ligne), pas déduite d'une durée en minutes : à
+  760 px de piste un palier de 2 h tombe à 57 px. Seuils **mesurés dans le
+  navigateur**, pas devinés : `06:00 · 18.5°` = 91 px de texte, `18.5°` = 42 px.
+  En dessous de 94 px le palier ne garde que sa consigne, en dessous de 44 px rien
+  du tout ; l'heure reste dans l'infobulle — aucun libellé rogné.
+- **Tout le palier est cliquable** (c'était une poignée de 14 px) : la sélection
+  montre un liseré, et `walkTo` (insertion au clic) disparaît au profit d'un
+  bouton **+** explicite par jour, désactivé à 6 paliers avec l'explication. Le
+  **+** pose le nouveau palier au milieu de la plus large plage libre de la
+  journée (`roomForNewBlock`) : « une heure après le dernier palier » débordait
+  après minuit sur une journée finissant à 23:00 et retombait silencieusement au
+  matin.
+- **Le bloc d'édition suit le jour sélectionné** au lieu d'être relégué sous la
+  semaine entière.
+
+Aucune modification de `MAX_BLOCKS`, `GRID`, `MIN_DEG` / `MAX_DEG`, ni du format
+`HH:MM/<deg>` : `formatSchedule` produit toujours un texte que la valve accepte.
+
 
 ## État relevé (CT125, 2026-10-19)
 
@@ -138,7 +181,69 @@ ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d --f
 ssh moli-os 'curl -s http://127.0.0.1:8790/api/health'                        # drivers_running 14, journal_failures 0
 ```
 
-Bundle servi (`index-BvEmRSS2.js`) : contient `Neutraliser le programme`,
+**Patch `chauffage-trv-zones` (même jour)** — appliqué par-dessus la chaîne des six,
+vérifié sur un clone propre de `d54c3de` (les sept patchs s'enchaînent, fichiers
+résultants identiques octet pour octet) :
+
+```sh
+ssh moli-os 'cd /opt/moli-os && git apply --check /tmp/chauffage-trv-zones.patch'  # CHECK_OK
+cd web && npm test        # 38/38 (20 schedule + 2 levelOf + 16 voice)
+cd web && npm run build   # OK
+```
+
+**Comment ces mesures ont été prises**, pour qu'elles soient rejouables : la prod sert
+une valve `off`, donc **lecture seule** — ces lignes sont relevées sur
+`192.168.1.125:8790/#/chauffage`. Le mode **éditable** n'existe pas en prod tant que
+la vanne n'est pas remise sur `Programme` ; il est donc mesuré sur une page jetable,
+`zones-preview.html` (deux `ScheduleEditor`, un éditable un `readOnly`), servie par
+Vite en local puis supprimée. Les deux jeux ne sont pas comparables en largeur de
+piste (l'entourage diffère), seulement en écart des repères, qui est nul des deux
+côtés.
+
+| État | Largeur écran | Piste | Écart des 5 repères | Paliers rognés |
+|---|---|---|---|---|
+| lecture seule (`Éteinte`), **prod** | 760 px | 588 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+| lecture seule (prod) | 1024 px | 736 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+| lecture seule (prod) | 1400 px | 1112 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+| éditable (`Programme`), page jetable | 760 px | 466 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+| éditable (page jetable) | 1024 px | 730 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+| éditable (page jetable) | 1400 px | 1106 px | 0 / 0 / 0 / 0 / 0 px | 0 |
+
+Le premier jet réservait en dur la colonne des outils (`84px 1fr 98px`) dans l'axe :
+en lecture seule, où les boutons ne sont pas dessinés, tous les repères dérivaient de
+~34 px (50 min). Corrigé en tirant les trois largeurs d'un seul endroit
+(`--name-w`, `--tools-w`, `--gap` sur `.week`), consommées par `.row`, `.scale`,
+`.edit` et `.legend` — et par `.scale.ro / .row.ro { … 1fr 0 }`, qui annule la
+colonne des outils des deux côtés à la fois : l'axe ne peut plus dériver seul.
+
+Le libellé d'un palier s'adapte à la place réelle, mesurée par un `ResizeObserver`
+posé **une fois sur `.week`** (la piste est la même pour les sept lignes ; un
+observer par ligne n'aurait mesuré que la dernière) : `00:00 · 16°` dès 94 px,
+`16°` seul dès 44 px, rien en dessous — l'heure reste dans l'infobulle. Balayage
+620 / 760 / 900 / 1024 / 1180 / 1400 / 1600 px : **0 libellé rogné** dans les deux
+modes.
+
+Légende `Confort 18.5° · Réduit 16° · Personnalisé` présente. Cliquer un palier fait
+apparaître le bloc d'édition **sous la ligne du jour cliqué** (un seul palier
+sélectionné) ; la même chose au clavier fonctionne (Tab jusqu'au palier, Entrée ou
+Espace). Bouton **+** sur une journée finissant à 23:00 : nouveau palier à 14:30
+(plage libre la plus large), pas à 01:00 ; sur une journée `00:00 / 23:45` : 12:00.
+À 6 paliers le bouton est désactivé avec l'infobulle `6 paliers au plus par jour`.
+`Confort` / `Réduit` changent la consigne d'un clic.
+
+Un palier en lecture seule **n'est pas** un `<button disabled>` : il porte
+`aria-disabled="true"` et une classe `.ro`. Un bouton désactivé avale les événements
+pointeur, donc son `title` ne s'affiche jamais — or c'est précisément le recours
+prévu pour un palier trop étroit pour porter son heure. Vérifié : le pointeur
+atteint bien le palier en lecture seule, et `title` = `00:00 · 16° · Réduit`.
+
+Rollback du patch seul :
+
+```sh
+ssh moli-os 'cd /opt/moli-os && git apply -R /tmp/chauffage-trv-zones.patch'
+```
+
+Bundle servi (`index-DxSwgL54.js`) : contient `Neutraliser le programme`,
 `Qui pilote`, `chauffage.palier_proche`, `chauffage.neutraliser_aide`,
 `weekly_schedule_${…}` et les 3 écritures `auto`/`heat`/`off`.
 
@@ -158,7 +263,9 @@ Bundle servi (`index-BvEmRSS2.js`) : contient `Neutraliser le programme`,
 - Le repère « maintenant » est dessiné **toujours** : 7 marqueurs `.now` mesurés en prod
   (il ne sortait qu'après le dernier palier de la journée).
 - La piste de la table horaire répond à Entrée/Espace (`addByKey`), plus seulement au
-  pointeur.
+  pointeur ; `addByKey` ne réagit plus qu'à la piste elle-même (`e.target ===
+  e.currentTarget`), sinon Entrée sur un palier était avalée par la ligne et le palier
+  ne pouvait pas être choisi au clavier.
 - `HeatingBar.choose()` est `async` et attend l'écriture de `system_mode` avant celle de
   la consigne : plus deux écritures non séquencées sur une valve à 12 %.
 - L'attente « la valve répond » est bornée par un `setTimeout` par jour envoyé, nettoyé
@@ -171,7 +278,7 @@ Bundle servi (`index-BvEmRSS2.js`) : contient `Neutraliser le programme`,
 ## Vérifications locales
 
 ```sh
-cd web && npm test     # 33/33 (17 schedule + 16 voice)
+cd web && npm test     # 38/38 (20 schedule + 2 levelOf + 16 voice)
 cd web && npm run build   # OK
 ```
 
@@ -181,6 +288,7 @@ la validation svelte est portée par `npm run build`.
 ## Rollback
 
 ```sh
+ssh moli-os 'cd /opt/moli-os && git apply -R /tmp/chauffage-trv-zones.patch'   # le n° 7 d'abord
 ssh moli-os 'cd /opt/moli-os && git apply -R /tmp/chauffage-trv.patch'
 ssh moli-os 'cd /opt/moli-os && docker compose build && docker compose up -d --force-recreate'
 ```

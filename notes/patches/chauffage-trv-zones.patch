@@ -1,0 +1,630 @@
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -282,6 +282,8 @@
+   "chauffage.table.palier": "Step",
+   "chauffage.table.consigne": "Step setpoint",
+   "chauffage.table.supprimer": "Remove this step",
++  "chauffage.table.ajouter": "Add a step",
++  "chauffage.niveau.custom": "Custom",
+   "chauffage.table.copier": "Copy this day to the next",
+   "chauffage.table.aplatir": "Back to a single setpoint",
+   "chauffage.table.tous": "Apply this day to the whole week",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -282,6 +282,8 @@
+   "chauffage.table.palier": "Palier",
+   "chauffage.table.consigne": "Consigne du palier",
+   "chauffage.table.supprimer": "Supprimer ce palier",
++  "chauffage.table.ajouter": "Ajouter un palier",
++  "chauffage.niveau.custom": "Personnalisé",
+   "chauffage.table.copier": "Copier ce jour sur le suivant",
+   "chauffage.table.aplatir": "Revenir à une consigne unique",
+   "chauffage.table.tous": "Appliquer ce jour à toute la semaine",
+diff --git a/web/src/maison/lib/schedule.js b/web/src/maison/lib/schedule.js
+--- a/web/src/maison/lib/schedule.js
++++ b/web/src/maison/lib/schedule.js
+@@ -146,6 +146,28 @@
+   return b.map((s, i) => (i === index ? { ...s, deg: clampDeg(deg) } : s));
+ }
+ 
++/** Where a new step would land: the middle of the widest room left in the
++ *  day, so « + » always adds inside the largest stretch instead of at an
++ *  arbitrary hour. Returns a minute-of-day, or null when the day is full or
++ *  has no room left on the grid. */
++export function roomForNewBlock(blocks) {
++  const b = normalize(blocks);
++  if (b.length >= MAX_BLOCKS) return null;
++  let best = null;
++  for (let i = 0; i < b.length; i++) {
++    const from = b[i].min;
++    const to = i + 1 < b.length ? b[i + 1].min : 24 * 60;
++    const width = to - from;
++    if (width < 2 * GRID) continue;
++    // Two quarters at least, and never at 00:00 (the anchor never moves).
++    const mid = Math.round((from + width / 2) / GRID) * GRID;
++    const at = Math.max(GRID, Math.min(24 * 60 - GRID, mid));
++    if (b.some((s) => s.min === at)) continue;
++    if (best == null || width > best.width) best = { at, width };
++  }
++  return best ? best.at : null;
++}
++
+ /** Why a day cannot be written, or null when it is fine. */
+ export function validate(blocks) {
+   const b = normalize(blocks);
+@@ -156,7 +178,22 @@
+ 
+ /** The coldest and warmest setpoints of a week, to scale a colour ramp. */
+ export function bounds(days) {
+-  const all = days.flat().map((b) => b.deg);
++  const all = (days ?? []).filter(Boolean).flat().map((b) => b.deg);
+   if (!all.length) return { min: MIN_DEG, max: MAX_DEG };
+   return { min: Math.min(...all), max: Math.max(...all) };
+ }
++
++/** How far a setpoint may sit from a named level and still be that level:
++ *  the valve rounds to the half degree, so an exact match is too strict. */
++const LEVEL_TOL = 0.25;
++
++/** Which named level a setpoint belongs to — « confort », « reduit » or
++ *  « custom ». The names come from the household's own config, never from
++ *  the valve, which only ever holds `HH:MM/<deg>` steps. */
++export function levelOf(deg, confort, reduit) {
++  const n = Number(deg);
++  if (!Number.isFinite(n)) return 'custom';
++  if (confort != null && Math.abs(n - Number(confort)) <= LEVEL_TOL) return 'confort';
++  if (reduit != null && Math.abs(n - Number(reduit)) <= LEVEL_TOL) return 'reduit';
++  return 'custom';
++}
+diff --git a/web/src/maison/lib/schedule.test.js b/web/src/maison/lib/schedule.test.js
+--- a/web/src/maison/lib/schedule.test.js
++++ b/web/src/maison/lib/schedule.test.js
+@@ -17,6 +17,8 @@
+   hhmm,
+   minutesOf,
+   bounds,
++  levelOf,
++  roomForNewBlock,
+ } from './schedule.js';
+ 
+ const SAMPLE = '00:00/16 07:00/19 10:00/16 10:00/16 17:00/19 23:00/16';
+@@ -136,3 +138,36 @@
+   const week = [parseSchedule(SAMPLE), neutralize(21)];
+   assert.deepEqual(bounds(week), { min: 16, max: 21 });
+ });
++
++test('levelOf names a step against the household setpoints', () => {
++  assert.equal(levelOf(18.5, 18.5, 16), 'confort');
++  assert.equal(levelOf(16, 18.5, 16), 'reduit');
++  assert.equal(levelOf(20.5, 18.5, 16), 'custom');
++  assert.equal(levelOf(12, 18.5, 16), 'custom');
++});
++
++test('levelOf tolerates the valve rounding and missing setpoints', () => {
++  assert.equal(levelOf(18.5, 18.5, 16), 'confort');
++  assert.equal(levelOf(18.51, 18.5, 16), 'confort');
++  assert.equal(levelOf(16.2, 18.5, 16), 'reduit');
++  assert.equal(levelOf(19, 18.5, 16), 'custom');
++  assert.equal(levelOf(16, null, undefined), 'custom');
++});
++
++test('roomForNewBlock lands in the widest stretch of the day', () => {
++  // 00:00→07:00 (7 h) is wider than 07:00→10:00: the middle of the night.
++  const day = parseSchedule('00:00/16 07:00/19 10:00/16 17:00/19 23:00/16');
++  assert.equal(roomForNewBlock(day), 3 * 60 + 30);
++});
++
++test('roomForNewBlock always finds room before a late last step', () => {
++  // The widest gap ends the day: half past noon, not a fallback to morning.
++  const late = parseSchedule('00:00/16 23:00/19');
++  assert.equal(roomForNewBlock(late), 11 * 60 + 30);
++});
++
++test('roomForNewBlock refuses a full day', () => {
++  const full = parseSchedule('00:00/16 04:00/16 08:00/16 12:00/16 16:00/16 20:00/16');
++  assert.equal(full.length, MAX_BLOCKS);
++  assert.equal(roomForNewBlock(full), null);
++});
+diff --git a/web/src/maison/ui/ScheduleEditor.svelte b/web/src/maison/ui/ScheduleEditor.svelte
+--- a/web/src/maison/ui/ScheduleEditor.svelte
++++ b/web/src/maison/ui/ScheduleEditor.svelte
+@@ -4,12 +4,14 @@
+   // and a day is only ever written when it actually changed (a valve on a
+   // battery hears enough commands as it is).
+   import { t } from '../../lib/i18n.svelte.js';
+-  import { DAYS, MAX_BLOCKS, GRID, MIN_DEG, MAX_DEG, STEP, parseSchedule, formatSchedule, neutralize, nextTransition, insertBlock, moveBlock, removeBlock, setDegree, bounds, hhmm, validate } from '../lib/schedule.js';
++  import { DAYS, MAX_BLOCKS, GRID, MIN_DEG, MAX_DEG, STEP, parseSchedule, formatSchedule, neutralize, nextTransition, insertBlock, moveBlock, removeBlock, setDegree, bounds, hhmm, validate, levelOf, roomForNewBlock } from '../lib/schedule.js';
+   import Icon from './Icon.svelte';
+ 
+   /** `days`: [{ day, text }] read off the valve. `readOnly` freezes it (the
+-   *  valve is run by automations). `onsave(days)` receives [{day, text}]. */
+-  let { days = [], readOnly = false, onsave = () => {} , neutralDeg = 16 } = $props();
++   *  valve is run by automations). `onsave(days)` receives [{day, text}].
++   *  `confort` / `reduit`: the household's own two temperatures, so a step can
++   *  be named — the valve itself only ever holds `HH:MM/<deg>`. */
++  let { days = [], readOnly = false, onsave = () => {} , neutralDeg = 16, confort = 18.5, reduit = 16 } = $props();
+ 
+   // The whole week lives in state so an edition is atomic and cancellable.
+   let draft = $state(DAYS.map(() => null));
+@@ -62,28 +64,96 @@
+   const sel = $derived(selected && draft[selected.day]?.[selected.index] ? selected : null);
+   const nowMin = $derived(new Date().getHours() * 60 + new Date().getMinutes());
+ 
+-  function walkTo(day, e) {
++  /** Adds a step in the widest stretch of the day, then selects it so its
++   *  setpoint can be set straight away. `roomForNewBlock` decides where: the
++   *  old "an hour after the last step" fell back to the beginning of the day
++   *  on a day ending at 23:00, with no cue about where the step had gone. A
++   *  day already holding MAX_BLOCKS steps gets nothing — that ceiling is the
++   *  valve's. */
++  function addZone(day) {
+     if (readOnly) return;
+-    const box = e.currentTarget.getBoundingClientRect();
+-    const min = Math.round(((e.clientX - box.left) / box.width) * 1440 / GRID) * GRID;
+-    draft[day] = insertBlock(draft[day], min);
++    const at = roomForNewBlock(draft[day]);
++    if (at == null) return;
++    const grown = insertBlock(draft[day], at);
++    if (grown.length === draft[day].length) return;
++    draft[day] = grown;
+     draft = [...draft];
++    const index = grown.findIndex((b) => b.min === at);
++    if (index > 0) selected = { day, index };
+   }
+ 
+-  /** A keyboard user gets the same « add a step » as a click: at the first
+-   *  free quarter of an hour after the last step, or at noon when the day is
+-   *  full of them. */
++  /** A keyboard user gets the same « add a step » — but only when the track
++   *  itself holds the focus: Enter reaches it from a step inside too, and
++   *  swallowing that would stop a step from being selected by keyboard. */
+   function addByKey(day, e) {
+     if (readOnly) return;
++    if (e.target !== e.currentTarget) return;
+     if (e.key !== 'Enter' && e.key !== ' ') return;
+     e.preventDefault();
+-    const blocks = draft[day];
+-    const last = blocks[blocks.length - 1]?.min ?? 0;
+-    const free = blocks.length < MAX_BLOCKS && last + GRID < 1440 ? last + GRID : 12 * 60;
+-    draft[day] = insertBlock(blocks, free);
+-    draft = [...draft];
++    addZone(day);
++  }
++
++  /** Picks a step up by its body: the whole segment is the target, not the
++   *  thin handle a finger has to find. */
++  function pick(day, index, e) {
++    if (readOnly) return;
++    e.stopPropagation();
++    selected = { day, index };
+   }
+ 
++  const level = (deg) => levelOf(deg, confort, reduit);
++  /** The household's own word for a level. « Confort » and « Réduit » already
++   *  exist as `maison.accueil.chauffage_*` — reused here so the tooltip and
++   *  the preset buttons can never name the same level differently. Only
++   *  « custom » is new. */
++  const levelName = (deg) => {
++    const l = level(deg);
++    return l === 'custom' ? t('chauffage.niveau.custom') : t(`maison.accueil.chauffage_${l}`);
++  };
++  /** Keyboard selection: a focused step answers Enter/Space like a click, so
++   *  a step can be chosen without a pointer. */
++  function selectByKey(day, index) {
++    if (readOnly) return;
++    selected = { day, index };
++  }
++  // A step shows its start time only when the pill can actually hold it: a
++  // minute threshold cannot know the row's width, so measure it. The label is
++  // "00:00 · 16°" (~62 px) plus its padding; below that the hour stays in the
++  // tooltip rather than being clipped mid-glyph. One measurement, taken on the
++  // week itself: every row shares its column widths, so measuring them
++  // separately would only be a way to disagree.
++  // Measured, not guessed: "06:00 · 18.5°" is 91 px at this font size, and
++  // "18.5°" alone 42 px. A pill narrower than the label loses the hour to
++  // the tooltip rather than being clipped mid-glyph.
++  const LABEL_PX = 94;
++  const DEG_PX = 44;
++  let weekEl = $state(null);
++  let rowPx = $state(0);
++  $effect(() => {
++    const el = weekEl;
++    if (!el || typeof ResizeObserver === 'undefined') return;
++    const measure = () => {
++      const track = el.querySelector('.track');
++      rowPx = track ? track.getBoundingClientRect().width : 0;
++    };
++    measure();
++    const seen = new ResizeObserver(measure);
++    seen.observe(el);
++    return () => seen.disconnect();
++  });
++  /** What a step can print: the time and the setpoint, the setpoint alone
++   *  when the pill is narrow, nothing at all when it is a sliver. */
++  const fit = (b, end) => {
++    const px = rowPx ? ((end - b.min) / 1440) * rowPx : Infinity;
++    if (px >= LABEL_PX) return 'time';
++    if (px >= DEG_PX) return 'deg';
++    return 'none';
++  };
++  // `draft` starts as nulls until the first reload lands: the markup must
++  // read it without tripping over a day that has not been parsed yet.
++  const blocksOf = (i) => draft[i] ?? [];
++  const full = (i) => blocksOf(i).length >= MAX_BLOCKS;
++
+   function dragStart(day, index, e) {
+     if (readOnly || index === 0) return;
+     e.stopPropagation();
+@@ -117,6 +187,10 @@
+     draft[day] = setDegree(draft[day], index, draft[day][index].deg + dir * STEP);
+     draft = [...draft];
+   };
++  const setDeg = (day, index, deg) => {
++    draft[day] = setDegree(draft[day], index, deg);
++    draft = [...draft];
++  };
+   const drop = (day, index) => {
+     draft[day] = removeBlock(draft[day], index);
+     draft = [...draft];
+@@ -199,62 +273,104 @@
+ {#if !days.length}
+   <p class="muted">{t('chauffage.table.vide')}</p>
+ {:else}
+-  <div class="week" class:ro={readOnly}>
++  <div class="week" class:ro={readOnly} bind:this={weekEl}>
++    <div class="scale" class:ro={readOnly} aria-hidden="true">
++      <span></span>
++      <div class="ticks">
++        {#each [0, 6, 12, 18, 24] as h}
++          <span style:left="{(h / 24) * 100}%">{String(h).padStart(2, '0')}h</span>
++        {/each}
++      </div>
++      <span class="gap"></span>
++    </div>
+     {#each DAYS as day, di (day)}
+-      <div class="row">
+-        <span class="name" class:wait={awaiting[day]}>
+-          {t(`chauffage.jour.${day}`)}
+-          {#if awaiting[day]}<small title={t('chauffage.en_attente')}>…</small>{/if}
+-        </span>
+-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+-        <div
+-          class="track"
+-          class:clickable={!readOnly}
+-          onpointerdown={(e) => walkTo(di, e)}
+-          onkeydown={(e) => addByKey(di, e)}
+-          role={readOnly ? undefined : 'button'}
+-          tabindex={readOnly ? undefined : 0}
+-          aria-label={t('chauffage.table.piste')}>
+-          {#each draft[di] as b, bi (b.min)}
+-            {@const end = draft[di][bi + 1]?.min ?? 1440}
+-            <span class="seg" style:left="{(b.min / 1440) * 100}%" style:width="{((end - b.min) / 1440) * 100}%" style:background={tone(b.deg)} title="{hhmm(b.min)} · {b.deg}°">
+-              <em class="num">{b.deg}°</em>
+-            </span>
+-            <button
+-              class="handle"
+-              class:anchor={bi === 0}
+-              class:sel={selected?.day === di && selected?.index === bi}
+-              style:left="{(b.min / 1440) * 100}%"
+-              disabled={readOnly || bi === 0}
+-              onpointerdown={(e) => dragStart(di, bi, e)}
+-              title="{hhmm(b.min)} · {b.deg}°"
+-              aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°"></button>
+-          {/each}
+-          <span class="now" style:left="{(nowMin / 1440) * 100}%"></span>
++      <div class="day">
++        <div class="row" class:ro={readOnly}>
++          <span class="name" class:wait={awaiting[day]}>
++            {t(`chauffage.jour.${day}`)}
++            {#if awaiting[day]}<small title={t('chauffage.en_attente')}>…</small>{/if}
++          </span>
++          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
++          <div
++            class="track"
++            onkeydown={(e) => addByKey(di, e)}
++            role={readOnly ? undefined : 'button'}
++            tabindex={readOnly ? undefined : 0}
++            aria-label={t('chauffage.table.piste')}>
++            {#each blocksOf(di) as b, bi (b.min)}
++              {@const end = blocksOf(di)[bi + 1]?.min ?? 1440}
++              <button
++                class="seg"
++                class:sel={selected?.day === di && selected?.index === bi}
++                class:ro={readOnly}
++                style:left="{(b.min / 1440) * 100}%"
++                style:width="{((end - b.min) / 1440) * 100}%"
++                style:background={tone(b.deg)}
++                onpointerdown={(e) => pick(di, bi, e)}
++                onclick={() => selectByKey(di, bi)}
++                aria-pressed={readOnly ? undefined : selected?.day === di && selected?.index === bi}
++                aria-disabled={readOnly || undefined}
++                title="{hhmm(b.min)} · {b.deg}° · {levelName(b.deg)}"
++                aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°">
++                <em class="num">{#if fit(b, end) === 'time'}{hhmm(b.min)} ·&nbsp;{/if}{#if fit(b, end) !== 'none'}{b.deg}°{/if}</em>
++              </button>
++              <button
++                class="handle"
++                class:anchor={bi === 0}
++                class:sel={selected?.day === di && selected?.index === bi}
++                style:left="{(b.min / 1440) * 100}%"
++                disabled={readOnly || bi === 0}
++                onpointerdown={(e) => dragStart(di, bi, e)}
++                title="{hhmm(b.min)} · {b.deg}°"
++                aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°"></button>
++            {/each}
++            <span class="now" style:left="{(nowMin / 1440) * 100}%"></span>
++          </div>
++          {#if !readOnly}
++            <div class="tools">
++              <button
++                class="add"
++                onclick={() => addZone(di)}
++                disabled={full(di)}
++                title={full(di) ? t('chauffage.table.paliers', { n: MAX_BLOCKS }) : t('chauffage.table.ajouter')}
++                aria-label={t('chauffage.table.ajouter')}><Icon name="plus" size={15} /></button>
++              <button onclick={() => flat(di)} title={t('chauffage.table.aplatir')} aria-label={t('chauffage.table.aplatir')}><Icon name="undo" size={14} /></button>
++              <button onclick={() => applyAll(di)} title={t('chauffage.table.tous')} aria-label={t('chauffage.table.tous')}><Icon name="copy" size={14} /></button>
++            </div>
++          {/if}
+         </div>
+-        {#if !readOnly}
+-          <div class="tools">
+-            <button onclick={() => flat(di)} title={t('chauffage.table.aplatir')} aria-label={t('chauffage.table.aplatir')}><Icon name="undo" size={14} /></button>
+-            <button onclick={() => applyAll(di)} title={t('chauffage.table.tous')} aria-label={t('chauffage.table.tous')}><Icon name="copy" size={14} /></button>
++
++        {#if sel && sel.day === di && !readOnly}
++          {@const b = draft[sel.day]?.[sel.index]}
++          <div class="edit" role="group" aria-label={t('chauffage.table.consigne')}>
++            <span>{t(`chauffage.jour.${DAYS[sel.day]}`)} · <b class="num">{hhmm(b.min)}</b></span>
++            <div class="levels">
++              <button class:on={level(b.deg) === 'confort'} onclick={() => setDeg(sel.day, sel.index, confort)}>
++                {t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
++              </button>
++              <button class:on={level(b.deg) === 'reduit'} onclick={() => setDeg(sel.day, sel.index, reduit)}>
++                {t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
++              </button>
++              <span class="level" class:on={level(b.deg) === 'custom'}>{t('chauffage.niveau.custom')}</span>
++            </div>
++            <div class="stepper">
++              <button onclick={() => step(sel.day, sel.index, -1)} disabled={b.deg <= MIN_DEG} aria-label={t('commun.clim.moins_chaud')}>−</button>
++              <b class="num">{b.deg}°</b>
++              <button onclick={() => step(sel.day, sel.index, 1)} disabled={b.deg >= MAX_DEG} aria-label={t('commun.clim.plus_chaud')}>+</button>
++            </div>
++            <button class="drop" onclick={() => drop(sel.day, sel.index)} disabled={sel.index === 0} title={t('chauffage.table.supprimer')} aria-label={t('chauffage.table.supprimer')}><Icon name="trash" size={15} /></button>
++            <button class="to" onclick={() => copyTo(sel.day, (sel.day + 1) % 7)} title={t('chauffage.table.copier')} aria-label={t('chauffage.table.copier')}><Icon name="copy" size={15} /></button>
+           </div>
+         {/if}
+       </div>
+     {/each}
+   </div>
+ 
+-  {#if sel && !readOnly}
+-    {@const b = draft[sel.day][sel.index]}
+-    <div class="edit" role="group" aria-label={t('chauffage.table.consigne')}>
+-      <span>{t(`chauffage.jour.${DAYS[sel.day]}`)} · <b class="num">{hhmm(b.min)}</b></span>
+-      <div class="stepper">
+-        <button onclick={() => step(sel.day, sel.index, -1)} disabled={b.deg <= MIN_DEG} aria-label={t('commun.clim.moins_chaud')}>−</button>
+-        <b class="num">{b.deg}°</b>
+-        <button onclick={() => step(sel.day, sel.index, 1)} disabled={b.deg >= MAX_DEG} aria-label={t('commun.clim.plus_chaud')}>+</button>
+-      </div>
+-      <button class="drop" onclick={() => drop(sel.day, sel.index)} disabled={sel.index === 0} title={t('chauffage.table.supprimer')} aria-label={t('chauffage.table.supprimer')}><Icon name="trash" size={15} /></button>
+-      <button class="to" onclick={() => copyTo(sel.day, (sel.day + 1) % 7)} title={t('chauffage.table.copier')} aria-label={t('chauffage.table.copier')}><Icon name="copy" size={15} /></button>
+-    </div>
+-  {/if}
++  <div class="legend">
++    <span><i class="dot" style:background={tone(confort)}></i>{t('maison.accueil.chauffage_confort')} <b class="num">{confort}°</b></span>
++    <span><i class="dot" style:background={tone(reduit)}></i>{t('maison.accueil.chauffage_reduit')} <b class="num">{reduit}°</b></span>
++    <span><i class="dot" style:background="var(--ink-3)"></i>{t('chauffage.niveau.custom')}</span>
++  </div>
+ 
+   {#each Object.entries(rewritten) as [day, text] (day)}
+     <p class="notice">{t('chauffage.message_relu', { texte: `${t(`chauffage.jour.${day}`)} · ${text}` })}</p>
+@@ -275,16 +391,62 @@
+ {/if}
+ 
+ <style>
++  /* One place for the three column widths: the axis, the rows, the edit block
++     and the legend must never disagree on where the track starts and ends. */
+   .week {
++    --name-w: 84px;
++    --tools-w: 98px;
++    --gap: 10px;
+     display: grid;
+     gap: 6px;
+   }
+ 
++  .day {
++    display: grid;
++  }
++
++  .scale {
++    display: grid;
++    grid-template-columns: var(--name-w) 1fr var(--tools-w);
++    align-items: end;
++    gap: var(--gap);
++  }
++
++  /* Read-only rows draw no tools, so their third column collapses to 0:
++     the axis must drop that column's width too, or every tick drifts left
++     (the gap stays, exactly like the row's). */
++  .scale.ro,
++  .row.ro {
++    grid-template-columns: var(--name-w) 1fr 0;
++  }
++
++  .ticks {
++    position: relative;
++    height: 14px;
++  }
++
++  .ticks span {
++    position: absolute;
++    transform: translateX(-50%);
++    font-size: 10.5px;
++    font-weight: 650;
++    color: var(--ink-3);
++    letter-spacing: 0.02em;
++  }
++
++  .ticks span:first-child {
++    transform: none;
++  }
++
++  .ticks span:last-child {
++    transform: translateX(-100%);
++  }
++
+   .row {
+     display: grid;
+-    grid-template-columns: 84px 1fr auto;
++    grid-template-columns: var(--name-w) 1fr var(--tools-w);
+     align-items: center;
+-    gap: 10px;
++    gap: var(--gap);
+   }
+ 
+   .name {
+@@ -304,10 +466,10 @@
+     background: var(--surface-2);
+     overflow: hidden;
+     touch-action: none;
+-  }
+-
+-  .track.clickable {
+-    cursor: crosshair;
++    /* the hour grid: a mark every hour, a stronger one every six */
++    background-image:
++      repeating-linear-gradient(90deg, rgb(0 0 0 / 7%) 0 1px, transparent 1px calc(100% / 24)),
++      repeating-linear-gradient(90deg, rgb(0 0 0 / 16%) 0 1px, transparent 1px calc(100% / 4));
+   }
+ 
+   .seg {
+@@ -317,6 +479,24 @@
+     display: grid;
+     place-items: center;
+     overflow: hidden;
++    border: 0;
++    border-right: 2px solid var(--surface-2);
++    padding: 0;
++    font: inherit;
++    cursor: pointer;
++  }
++
++  /* A read-only step is still a button: nothing is disabled, so the browser
++     keeps firing pointer events and its `title` stays readable — the tooltip
++     is the only place the hour survives a pill too narrow to print it. */
++  .seg.ro {
++    cursor: default;
++  }
++
++  .seg.sel {
++    outline: 2px solid var(--ink);
++    outline-offset: -3px;
++    z-index: 1;
+   }
+ 
+   .seg em {
+@@ -326,6 +506,8 @@
+     color: #fff;
+     text-shadow: 0 1px 2px rgb(0 0 0 / 35%);
+     pointer-events: none;
++    white-space: nowrap;
++    padding: 0 4px;
+   }
+ 
+   .handle {
+@@ -391,14 +573,79 @@
+   .edit {
+     display: flex;
+     align-items: center;
++    flex-wrap: wrap;
+     gap: 14px;
+-    margin-top: 10px;
++    margin: 6px 0 0 calc(var(--name-w) + var(--gap));
+     padding: 8px 12px;
+     border-radius: 12px;
+     background: var(--surface-2);
+     font-size: 13.5px;
+   }
+ 
++  .levels {
++    display: flex;
++    gap: 6px;
++  }
++
++  .levels button,
++  .levels .level {
++    display: inline-flex;
++    align-items: center;
++    gap: 5px;
++    height: 30px;
++    padding: 0 11px;
++    border: 1px solid transparent;
++    border-radius: 999px;
++    background: var(--surface);
++    color: var(--ink-2);
++    font: inherit;
++    font-size: 12.5px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  .levels .level {
++    cursor: default;
++  }
++
++  .levels button.on,
++  .levels .level.on {
++    border-color: var(--warm);
++    color: var(--warm-ink);
++  }
++
++  .levels small {
++    font-weight: 700;
++    opacity: 0.75;
++  }
++
++  .tools button:disabled {
++    opacity: 0.4;
++    cursor: default;
++  }
++
++  .legend {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 14px;
++    margin-top: 10px;
++    padding-left: calc(var(--name-w) + var(--gap));
++    font-size: 12px;
++    color: var(--ink-3);
++  }
++
++  .legend span {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;
++  }
++
++  .legend .dot {
++    width: 9px;
++    height: 9px;
++    border-radius: 50%;
++  }
++
+   .stepper {
+     display: flex;
+     align-items: center;
+diff --git a/web/src/maison/ui/ValveCard.svelte b/web/src/maison/ui/ValveCard.svelte
+--- a/web/src/maison/ui/ValveCard.svelte
++++ b/web/src/maison/ui/ValveCard.svelte
+@@ -149,6 +149,8 @@
+       readOnly={!autoRun}
+       onsave={saveDays}
+       neutralDeg={Number(value(id, 'occupied_heating_setpoint')) || 16}
++      {confort}
++      {reduit}
+     />
+   {:else}
+     <p class="muted small">{t('chauffage.table_absente')}</p>
