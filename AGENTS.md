@@ -185,6 +185,13 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 | 6 | `chauffage-trv.patch` | `notes/chauffage-trv.md` — hors Accueil, page `#/chauffage` |
 | 7 | `chauffage-trv-zones.patch` | `notes/chauffage-trv.md` — axe horaire, paliers nommés Confort/Réduit/Personnalisé, édition sur place |
 
+Hors chaîne, côté **moteur** : `notes/patches/moteur-stale-rule.patch` — ajoute
+`Rule::Stale { point, for_s }` (« ce capteur ne dit plus rien depuis N »), la seule
+règle qu'un seuil ne peut pas exprimer. C'est le correctif amont de l'incident
+Alicia (capteur figé à une valeur plausible) ; voir
+`notes/chauffage-alicia-vanne.md`. **Ne pas** l'appliquer sur le CT125 : il y est
+déjà compilé dans l'image.
+
 `accueil-tablette2025-pixel` **doit** passer après `accueil-plan-hero` : sur une base
 `parity` seule il échoue (`Accueil.svelte:190`), la carte Plan devant déjà être dans
 `SkyHero`. Appliquer les sept dans cet ordre, sans en sauter un.
@@ -311,6 +318,8 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `tablette-lenovo-moli.md` | Tablette kiosque (Fully Kiosk → Moli) |
 | `energy-crosscheck.md` | Croisement énergie HA ↔ Moli |
 | `security-audit.md` | Audit code malveillant |
+| `chauffage-alicia-vanne.md` | Chauffage Alicia : la vanne régule sur son capteur interne, planning natif + 3 automatismes Moli, HA neutralisé (Better Thermostat désactivé) |
+| `spot-entree-mouvement.md` | Spot d'entrée sur mouvement : remplace 2 automations HA, `sun is night` au lieu d'un seuil de luminosité inutilisable |
 | `patches/` | Patchs du fork dashboard + échantillons config (`*.hainspire`) |
 
 ## Protocole sub-agents (Swarm/CrewAI)

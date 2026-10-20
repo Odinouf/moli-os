@@ -1,0 +1,404 @@
+From 4c5c273ab9e76ed77b3fc53341fe5d953774f9e2 Mon Sep 17 00:00:00 2001
+From: Rudy Molinillo <rudy@nxus.fr>
+Date: Tue, 20 Oct 2026 16:32:39 +0200
+Subject: [PATCH] =?UTF-8?q?Moteur=20:=20un=20capteur=20qui=20se=20tait=20e?=
+ =?UTF-8?q?st=20rep=C3=A9r=C3=A9=20par=20son=20silence?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Un seuil ne voit jamais une mesure qui cesse d'arriver : elle garde sa
+dernière valeur, plausible et figée. C'est ainsi qu'une vanne a chauffé
+sur un 25,7 °C immobile pendant quatorze heures.
+
+La règle « périmé » demande autre chose : depuis combien de temps ce
+point n'a-t-il rien dit ? `holds()` lisait déjà chaque échantillon, mais
+jetait son horodatage ; il le garde et compare l'âge à `for_s`.
+
+Un point qui n'a jamais rien dit est périmé d'emblée — il n'y a rien à
+croire. Bornes : 1 seconde à 24 heures.
+---
+ crates/moli-automation/src/check.rs    | 19 +++++++
+ crates/moli-automation/src/model.rs    | 50 +++++++++++++++++
+ crates/moli-automation/src/run.rs      |  8 +++
+ crates/moli-automation/tests/engine.rs | 78 ++++++++++++++++++++++++++
+ crates/moli-automation/tests/langue.rs | 14 +++++
+ locales/en/automatismes.json           |  2 +
+ locales/en/moteur.json                 |  2 +
+ locales/fr/automatismes.json           |  2 +
+ locales/fr/moteur.json                 |  2 +
+ web/src/maison/auto/Inspector.svelte   |  8 ++-
+ web/src/maison/lib/auto.svelte.js      |  1 +
+ 11 files changed, 185 insertions(+), 1 deletion(-)
+
+diff --git a/crates/moli-automation/src/check.rs b/crates/moli-automation/src/check.rs
+index bdeaba5..6319438 100644
+--- a/crates/moli-automation/src/check.rs
++++ b/crates/moli-automation/src/check.rs
+@@ -246,6 +246,12 @@ impl Ctx<'_> {
+                 self.days(days);
+             }
+             Rule::Sun { .. } => {}
++            Rule::Stale { point, for_s } => {
++                self.need(point, false);
++                if *for_s == 0 || *for_s > MAX_WAIT_S {
++                    self.push(Level::Error, tr!("moteur.verif.peremption"));
++                }
++            }
+         }
+     }
+ 
+@@ -788,6 +794,19 @@ pub(crate) fn rule_words(rule: &Rule, hub: &Hub) -> String {
+         } else {
+             "moteur.regle.nuit"
+         }),
++        Rule::Stale { point, for_s } => {
++            let s = said(hub, point);
++            let label = s.spec.as_ref().map_or_else(
++                || point.rsplit('/').next().unwrap_or_default().to_owned(),
++                |p| p.label.to_lowercase(),
++            );
++            tr!(
++                "moteur.regle.perime",
++                libelle = label,
++                appareil = s.device,
++                duree = duration(*for_s)
++            )
++        }
+     }
+ }
+ 
+diff --git a/crates/moli-automation/src/model.rs b/crates/moli-automation/src/model.rs
+index 0514f07..bbb2408 100644
+--- a/crates/moli-automation/src/model.rs
++++ b/crates/moli-automation/src/model.rs
+@@ -333,6 +333,15 @@ pub enum Rule {
+     },
+     /// Day (sun up) or night.
+     Sun { is: DayNight },
++    /// A point that stopped moving: no fresh value for `for_s` seconds.
++    /// What a threshold cannot see — a measurement that stops arriving keeps
++    /// its last value, plausible and frozen.
++    Stale {
++        point: String,
++        /// Seconds without news. 0: stale as soon as nothing recent arrived.
++        #[serde(default)]
++        for_s: u64,
++    },
+ }
+ 
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+@@ -418,4 +427,45 @@ mod tests {
+         assert_eq!(minutes_of("24:00"), None);
+         assert_eq!(minutes_of("7h"), None);
+     }
++
++    #[test]
++    fn a_stale_rule_reads_from_the_graph() {
++        let a: Automation = serde_json::from_value(serde_json::json!({
++            "id": "g", "name": "Garde-fou", "enabled": true,
++            "graph": {
++                "nodes": [
++                    { "id": "t", "type": "every", "minutes": 15 },
++                    { "id": "c", "type": "if", "all": true, "rules": [
++                        { "kind": "stale", "point": "hue:2/temperature", "for_s": 7200 }
++                    ]}
++                ],
++                "edges": [{ "from": "t", "to": "c" }]
++            }
++        }))
++        .unwrap();
++        let Step::If { rules, .. } = &a.graph.nodes[1].step else {
++            panic!("expected an if node, got {:?}", a.graph.nodes[1].step);
++        };
++        assert_eq!(
++            rules[0],
++            Rule::Stale {
++                point: "hue:2/temperature".into(),
++                for_s: 7200,
++            }
++        );
++    }
++
++    #[test]
++    fn a_stale_rule_says_how_long() {
++        let rule = Rule::Stale {
++            point: "hue:2/temperature".into(),
++            for_s: 7200,
++        };
++        assert_eq!(
++            serde_json::to_value(&rule).unwrap(),
++            serde_json::json!({
++                "kind": "stale", "point": "hue:2/temperature", "for_s": 7200
++            })
++        );
++    }
+ }
+diff --git a/crates/moli-automation/src/run.rs b/crates/moli-automation/src/run.rs
+index a4356b2..331303c 100644
+--- a/crates/moli-automation/src/run.rs
++++ b/crates/moli-automation/src/run.rs
+@@ -506,6 +506,14 @@ pub(crate) fn holds(autos: &Automations, rule: &Rule) -> bool {
+             let day = autos.is_day();
+             if *is == DayNight::Day { day } else { !day }
+         }
++        Rule::Stale { point, for_s } => {
++            let Some(sample) = autos.0.hub.state(&PointId::from(point.as_str())) else {
++                // Nothing ever arrived: nothing to trust.
++                return true;
++            };
++            let age = moli_core::now_ms().saturating_sub(sample.ts);
++            age >= for_s.saturating_mul(1000)
++        }
+     }
+ }
+ 
+diff --git a/crates/moli-automation/tests/engine.rs b/crates/moli-automation/tests/engine.rs
+index 82e9d23..2460b81 100644
+--- a/crates/moli-automation/tests/engine.rs
++++ b/crates/moli-automation/tests/engine.rs
+@@ -459,6 +459,84 @@ async fn a_changed_graph_needs_a_new_approval() {
+     assert!(back.is_live(), "back to the version the person approved");
+ }
+ 
++/// A measurement that stops arriving keeps its last value: a threshold can
++/// never see that. « Stale » asks when it last moved.
++#[tokio::test]
++async fn a_stale_point_is_a_rule() {
++    let (hub, autos, _c) = setup().await;
++    let graph = serde_json::json!({
++        "nodes": [
++            { "id": "t", "type": "manual" },
++            { "id": "c", "type": "if", "rules": [
++                { "kind": "stale", "point": "fake:switch/on", "for_s": 1 }
++            ]},
++            { "id": "s", "type": "set", "point": "fake:lamp/on", "value": true }
++        ],
++        "edges": [{ "from": "t", "to": "c" }, { "from": "c", "port": "yes", "to": "s" }]
++    });
++    let a = approved(&autos, graph).await;
++    assert!(
++        autos.check(&a.graph).ok(),
++        "{:?}",
++        autos.check(&a.graph).problems
++    );
++
++    tokio::time::sleep(Duration::from_millis(1200)).await;
++    autos
++        .run_now(&a.id, false, Some(&a.fingerprint()), HUMAN)
++        .await
++        .unwrap();
++    assert!(
++        lamp_turns(&hub, true).await,
++        "a point nothing refreshed is stale"
++    );
++}
++
++#[tokio::test]
++async fn a_point_that_keeps_moving_is_not_stale() {
++    let (hub, autos, _c) = setup().await;
++    let graph = serde_json::json!({
++        "nodes": [
++            { "id": "t", "type": "manual" },
++            { "id": "c", "type": "if", "rules": [
++                { "kind": "stale", "point": "fake:switch/on", "for_s": 3600 }
++            ]},
++            { "id": "s", "type": "set", "point": "fake:lamp/on", "value": true }
++        ],
++        "edges": [{ "from": "t", "to": "c" }, { "from": "c", "port": "yes", "to": "s" }]
++    });
++    let a = approved(&autos, graph).await;
++    autos
++        .run_now(&a.id, false, Some(&a.fingerprint()), HUMAN)
++        .await
++        .unwrap();
++    tokio::time::sleep(Duration::from_millis(300)).await;
++    assert!(
++        !lamp_turns(&hub, true).await,
++        "seen a second ago is not stale"
++    );
++    // A point that never had a value is stale from the start (nothing to trust).
++    let graph = serde_json::json!({
++        "nodes": [
++            { "id": "t", "type": "manual" },
++            { "id": "c", "type": "if", "rules": [
++                { "kind": "stale", "point": "fake:speaker/announce", "for_s": 3600 }
++            ]},
++            { "id": "s", "type": "set", "point": "fake:lamp/on", "value": true }
++        ],
++        "edges": [{ "from": "t", "to": "c" }, { "from": "c", "port": "yes", "to": "s" }]
++    });
++    let b = approved(&autos, graph).await;
++    autos
++        .run_now(&b.id, false, Some(&b.fingerprint()), HUMAN)
++        .await
++        .unwrap();
++    assert!(
++        lamp_turns(&hub, true).await,
++        "a point that never reported is stale by definition"
++    );
++}
++
+ #[tokio::test]
+ async fn an_agent_switching_it_off_ends_its_runs_and_is_journaled() {
+     let (hub, autos, _c) = setup().await;
+diff --git a/crates/moli-automation/tests/langue.rs b/crates/moli-automation/tests/langue.rs
+index b1ae740..288eda5 100644
+--- a/crates/moli-automation/tests/langue.rs
++++ b/crates/moli-automation/tests/langue.rs
+@@ -165,6 +165,15 @@ async fn the_engine_speaks_the_language_of_the_house() {
+         json!({ "type": "when_threshold", "point": "fake:room/temperature", "above": 26.5, "for_s": 600 }),
+         json!({ "type": "notify", "message": "Hot", "channels": ["maison", "voix", "telegram"] }),
+     );
++    let silent_thermometer = json!({
++        "nodes": [
++            { "id": "t", "type": "every", "minutes": 15 },
++            { "id": "c", "type": "if", "rules": [
++                { "kind": "stale", "point": "fake:room/temperature", "for_s": 7200 } ] },
++            { "id": "n", "type": "notify", "message": "Cold?", "channels": ["maison"] }
++        ],
++        "edges": [{ "from": "t", "to": "c" }, { "from": "c", "port": "yes", "to": "n" }]
++    });
+     let evening = json!({
+         "nodes": [
+             { "id": "t", "type": "when_state", "point": "fake:door/contact", "to": false },
+@@ -199,6 +208,11 @@ async fn the_engine_speaks_the_language_of_the_house() {
+         "When the temperature of room goes above 26.5 °C for 10 min, \
+          notify the house, out loud and Telegram: “Hot”."
+     );
++    assert_eq!(
++        say(silent_thermometer),
++        "Every 15 min, if room (temperature) has not reported for 2 h: \
++         notify the house: “Cold?”."
++    );
+     assert_eq!(
+         say(evening.clone()),
+         "When door opens, if lamp is off and it is between 22:00 and 06:00: \
+diff --git a/locales/en/automatismes.json b/locales/en/automatismes.json
+index daf0f33..e8a533d 100644
+--- a/locales/en/automatismes.json
++++ b/locales/en/automatismes.json
+@@ -151,6 +151,7 @@
+   "automatismes.regle.apres": "after {heure}",
+   "automatismes.regle.avant": "before {heure}",
+   "automatismes.regle.toute_heure": "at any time",
++  "automatismes.regle.perime": "{appareil} has not reported for {duree}",
+ 
+   "automatismes.champ.valeur": "Value",
+   "automatismes.champ.jours": "Days",
+@@ -191,6 +192,7 @@
+   "automatismes.inspecteur.regle.state": "Device",
+   "automatismes.inspecteur.regle.time": "Time",
+   "automatismes.inspecteur.regle.sun": "Day / night",
++  "automatismes.inspecteur.regle.stale": "Silence",
+   "automatismes.inspecteur.comparaison": "Comparison",
+   "automatismes.inspecteur.est": "is",
+   "automatismes.inspecteur.nest_pas": "is not",
+diff --git a/locales/en/moteur.json b/locales/en/moteur.json
+index dce6ce2..7e47b1e 100644
+--- a/locales/en/moteur.json
++++ b/locales/en/moteur.json
+@@ -22,6 +22,7 @@
+   "moteur.verif.seuil_manquant": "Enter the value it should go above or below.",
+   "moteur.verif.decalage_soleil": "The offset from sunrise or sunset is more than 6 h.",
+   "moteur.verif.intervalle": "Between 1 minute and 24 hours.",
++  "moteur.verif.peremption": "Staleness goes from 1 second to 24 hours.",
+   "moteur.verif.condition_manquante": "Add at least one condition.",
+   "moteur.verif.valeur_refusee": "Value refused for “{nom}”: {erreur}.",
+   "moteur.verif.pas_bascule": "“{nom}” can’t be turned on or off.",
+@@ -134,6 +135,7 @@
+   "moteur.regle.jours_heures": "it is {heures} {jours}",
+   "moteur.regle.jour": "it is daytime",
+   "moteur.regle.nuit": "it is nighttime",
++  "moteur.regle.perime": "{appareil} ({libelle}) has not reported for {duree}",
+ 
+   "moteur.action.allumer": "turn on {appareil}",
+   "moteur.action.eteindre": "turn off {appareil}",
+diff --git a/locales/fr/automatismes.json b/locales/fr/automatismes.json
+index 3d0e0de..460e728 100644
+--- a/locales/fr/automatismes.json
++++ b/locales/fr/automatismes.json
+@@ -140,6 +140,7 @@
+   "automatismes.regle.apres": "après {heure}",
+   "automatismes.regle.avant": "avant {heure}",
+   "automatismes.regle.toute_heure": "à toute heure",
++  "automatismes.regle.perime": "{appareil} n'a rien dit depuis {duree}",
+   "automatismes.champ.valeur": "Valeur",
+   "automatismes.champ.jours": "Jours",
+   "automatismes.champ.tous_les_jours": "tous les jours",
+@@ -175,6 +176,7 @@
+   "automatismes.inspecteur.regle.state": "Appareil",
+   "automatismes.inspecteur.regle.time": "Heure",
+   "automatismes.inspecteur.regle.sun": "Jour / nuit",
++  "automatismes.inspecteur.regle.stale": "Silence",
+   "automatismes.inspecteur.comparaison": "Comparaison",
+   "automatismes.inspecteur.est": "est",
+   "automatismes.inspecteur.nest_pas": "n’est pas",
+diff --git a/locales/fr/moteur.json b/locales/fr/moteur.json
+index 5dab158..b0f61b0 100644
+--- a/locales/fr/moteur.json
++++ b/locales/fr/moteur.json
+@@ -22,6 +22,7 @@
+   "moteur.verif.seuil_manquant": "Indique au-dessus ou en dessous de quelle valeur.",
+   "moteur.verif.decalage_soleil": "Décalage de plus de 6 h par rapport au soleil.",
+   "moteur.verif.intervalle": "Entre 1 minute et 24 heures.",
++  "moteur.verif.peremption": "La péremption va de 1 seconde à 24 heures.",
+   "moteur.verif.condition_manquante": "Ajoute au moins une condition.",
+   "moteur.verif.valeur_refusee": "Valeur refusée pour « {nom} » : {erreur}.",
+   "moteur.verif.pas_bascule": "« {nom} » ne s'allume ni ne s'éteint.",
+@@ -134,6 +135,7 @@
+   "moteur.regle.jours_heures": "on est {jours}, {heures}",
+   "moteur.regle.jour": "il fait jour",
+   "moteur.regle.nuit": "il fait nuit",
++  "moteur.regle.perime": "{appareil} ({libelle}) n'a rien dit depuis {duree}",
+ 
+   "moteur.action.allumer": "allumer {appareil}",
+   "moteur.action.eteindre": "éteindre {appareil}",
+diff --git a/web/src/maison/auto/Inspector.svelte b/web/src/maison/auto/Inspector.svelte
+index e10d6e1..3492368 100644
+--- a/web/src/maison/auto/Inspector.svelte
++++ b/web/src/maison/auto/Inspector.svelte
+@@ -29,6 +29,7 @@
+   function ruleOf(kind) {
+     if (kind === 'sun') return { kind: 'sun', is: 'night' };
+     if (kind === 'time') return { kind: 'time', after: '22:00', before: '06:00', days: [] };
++    if (kind === 'stale') return { kind: 'stale', point: '', for_s: 7200 };
+     return { kind: 'state', point: '', op: 'eq', value: true };
+   }
+   const OPS = [
+@@ -44,7 +45,7 @@
+ {#snippet rule(r, change)}
+   <div class="rule">
+     <div class="seg small">
+-      {#each ['state', 'time', 'sun'] as k (k)}
++      {#each ['state', 'time', 'sun', 'stale'] as k (k)}
+         <button class:on={r.kind === k} onclick={() => change(ruleOf(k), true)}>{t('automatismes.inspecteur.regle.' + k)}</button>
+       {/each}
+     </div>
+@@ -73,6 +74,11 @@
+         <Fields kind="time" value={r.before} onchange={(v) => change({ before: v })} />
+       </div>
+       <Fields kind="days" value={r.days} onchange={(v) => change({ days: v })} />
++    {:else if r.kind === 'stale'}
++      <PointPicker point={r.point} onpick={(p) => change({ point: p })} />
++      {#if r.point}
++        <Fields kind="duration" value={r.for_s || 7200} onchange={(v) => change({ for_s: v })} />
++      {/if}
+     {:else}
+       <div class="seg">
+         <button class:on={r.is === 'day'} onclick={() => change({ is: 'day' })}><Icon name="sun" size={16} />{t('automatismes.inspecteur.il_fait_jour')}</button>
+diff --git a/web/src/maison/lib/auto.svelte.js b/web/src/maison/lib/auto.svelte.js
+index 92adc41..0c05f99 100644
+--- a/web/src/maison/lib/auto.svelte.js
++++ b/web/src/maison/lib/auto.svelte.js
+@@ -238,6 +238,7 @@ export function nodeText(node) {
+ const OPS = { eq: '=', ne: '≠', gt: '>', ge: '≥', lt: '<', le: '≤' };
+ export function ruleText(r) {
+   if (r.kind === 'sun') return t(r.is === 'day' ? 'automatismes.regle.jour' : 'automatismes.regle.nuit');
++  if (r.kind === 'stale') return t('automatismes.regle.perime', { appareil: pointName(r.point), duree: duration(r.for_s) });
+   if (r.kind === 'time') {
+     const h =
+       r.after && r.before
+-- 
+2.53.0
+
