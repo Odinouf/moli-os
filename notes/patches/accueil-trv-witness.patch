@@ -1,0 +1,442 @@
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+index 997f540..8a9ac85 100644
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -244,6 +244,12 @@
+   "maison.accueil.couloir": "Hallway",
+   "maison.accueil.camera": "Camera",
+   "maison.accueil.camera_actualiser": "Refresh the {nom} image",
++  "maison.accueil.vanne_chauffe": "heating",
++  "maison.accueil.vanne_repos": "at rest",
++  "maison.accueil.vanne_eteinte": "off",
++  "maison.accueil.vanne_hors_ligne": "offline",
++  "maison.accueil.vanne_titre": "Valve: {etat} · setpoint {temp}",
++  "maison.accueil.vanne_titre_seule": "Valve: {etat}",
+   "chauffage.titre": "Heating",
+   "chauffage.sous_titre": "The house’s thermostatic valves: setpoint, weekly timetable, or your automations.",
+   "chauffage.presets": "House modes",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index 63d98ca..c112884 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -244,6 +244,12 @@
+   "maison.accueil.couloir": "Couloir",
+   "maison.accueil.camera": "Caméra",
+   "maison.accueil.camera_actualiser": "Actualiser l'image de {nom}",
++  "maison.accueil.vanne_chauffe": "chauffe",
++  "maison.accueil.vanne_repos": "au repos",
++  "maison.accueil.vanne_eteinte": "éteinte",
++  "maison.accueil.vanne_hors_ligne": "hors ligne",
++  "maison.accueil.vanne_titre": "Vanne : {etat} · consigne {temp}",
++  "maison.accueil.vanne_titre_seule": "Vanne : {etat}",
+   "chauffage.titre": "Chauffage",
+   "chauffage.sous_titre": "Les vannes thermostatiques de la maison : consigne, table horaire, ou vos automatisations.",
+   "chauffage.presets": "Modes de la maison",
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+index 673edcc..875302a 100644
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -3,7 +3,10 @@
+ 
+ import { hub, connect, login, decide, refreshSession } from '../../lib/hub.svelte.js';
+ import { t, locale } from '../../lib/i18n.svelte.js';
+-export { hub };
++import { roomKey } from './rooms.js';
++import { VALVE_KEYS } from './trv.js';
++
++export { hub, roomKey };
+ 
+ export const home = $state({
+   /** @type {any} layout from /api/home ({} = automatic) */
+@@ -154,13 +157,8 @@ export function pending(id, point = null) {
+ 
+ // ---- rooms ---------------------------------------------------------------------
+ 
+-const norm = (s) =>
+-  String(s ?? '')
+-    .normalize('NFD')
+-    .replace(/\p{M}/gu, '')
+-    .trim()
+-    .replace(/\s+/g, ' ')
+-    .toLowerCase();
++// `norm` is the dashboard's one room-name comparison (`lib/rooms.js`).
++const norm = roomKey;
+ 
+ /** The layout's name for a room called `raw` somewhere (a bridge, the plan). */
+ export function roomNamed(raw) {
+@@ -223,8 +221,9 @@ export function deviceKind(d) {
+   if (has(d, 'target_temperature')) return 'climate';
+   // A thermostatic valve states its setpoint the ZCL way: no
+   // `target_temperature`, but a `system_mode` and an
+-  // `occupied_heating_setpoint`. It heats, so it is a climate device.
+-  if (has(d, 'occupied_heating_setpoint') || has(d, 'system_mode')) return 'climate';
++  // `occupied_heating_setpoint` (`VALVE_KEYS`). It heats, so it is a climate
++  // device.
++  if (VALVE_KEYS.some((k) => has(d, k))) return 'climate';
+   // A fan turns blades: the Tuya ceiling fan says so with `fan_speed` and
+   // friends. What a plain plug feeds is unknown to Moli — a plug is only a
+   // fan when its name says so (the stove fan is one).
+diff --git a/web/src/maison/lib/power.js b/web/src/maison/lib/power.js
+new file mode 100644
+index 0000000..0876f7c
+--- /dev/null
++++ b/web/src/maison/lib/power.js
+@@ -0,0 +1,17 @@
++// The colour of a live power reading. One rule for the whole dashboard: the
++// header band and a tablet row must not paint the same wattage two colours.
++// Neutral until it climbs — a house that burns 400 W is not « fine », it is
++// simply not worth a colour.
++const WARM_AT = 1000;
++const ALERT_AT = 3000;
++
++/** `''` (neutral), `'warm'` from 1000 W, `'alert'` from 3000 W. A reading
++ *  that is not a number earns no colour at all. */
++export function powerTone(watts) {
++  const w = Number(watts);
++  if (watts == null || !Number.isFinite(w)) return '';
++  const abs = Math.abs(w);
++  if (abs >= ALERT_AT) return 'alert';
++  if (abs >= WARM_AT) return 'warm';
++  return '';
++}
+diff --git a/web/src/maison/lib/power.test.js b/web/src/maison/lib/power.test.js
+new file mode 100644
+index 0000000..cfdb00a
+--- /dev/null
++++ b/web/src/maison/lib/power.test.js
+@@ -0,0 +1,31 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { powerTone } from './power.js';
++
++test('a quiet house has no colour', () => {
++  assert.equal(powerTone(0), '');
++  assert.equal(powerTone(459), '');
++  assert.equal(powerTone(999), '');
++});
++
++test('a thousand watts warms the pill', () => {
++  assert.equal(powerTone(1000), 'warm');
++  assert.equal(powerTone(2999), 'warm');
++});
++
++test('three thousand watts raises the alarm', () => {
++  assert.equal(powerTone(3000), 'alert');
++  assert.equal(powerTone(4200), 'alert');
++});
++
++test('the clamp can read negative; the colour follows the magnitude', () => {
++  assert.equal(powerTone(-1500), 'warm');
++  assert.equal(powerTone(-4200), 'alert');
++});
++
++test('a reading that is not a number earns nothing', () => {
++  assert.equal(powerTone(null), '');
++  assert.equal(powerTone(undefined), '');
++  assert.equal(powerTone('—'), '');
++  assert.equal(powerTone(Number.NaN), '');
++});
+diff --git a/web/src/maison/lib/rooms.js b/web/src/maison/lib/rooms.js
+new file mode 100644
+index 0000000..51cfa54
+--- /dev/null
++++ b/web/src/maison/lib/rooms.js
+@@ -0,0 +1,16 @@
++// Rooms, compared the way the household writes them: `Étage` = `etage`,
++// `VMC  +  SDB` = `vmc + sdb`. One normalization rule for the whole
++// dashboard — the model (`home.svelte.js`), the valve witness
++// (`trv.js`) and the node tests all read it here.
++//
++// Dependency-free on purpose: no Svelte runes, no hub, so `node --test`
++// can load it.
++
++export function roomKey(name) {
++  return String(name ?? '')
++    .normalize('NFD')
++    .replace(/\p{M}/gu, '')
++    .trim()
++    .replace(/\s+/g, ' ')
++    .toLowerCase();
++}
+diff --git a/web/src/maison/lib/trv.js b/web/src/maison/lib/trv.js
+new file mode 100644
+index 0000000..7f6dcb7
+--- /dev/null
++++ b/web/src/maison/lib/trv.js
+@@ -0,0 +1,45 @@
++// A thermostatic valve, seen from the Accueil: which valve belongs to a row,
++// and what it is doing right now. No device id here — a row names its valve,
++// or the valve is found in the row's own room.
++//
++// Deliberately dependency-free (no Svelte, no hub): the row component and the
++// node tests load the same code. `roomKey` is the dashboard's one
++// normalization rule, in `lib/rooms.js`.
++import { roomKey } from './rooms.js';
++
++/** The points that make a climate device a thermostatic valve: it states its
++ *  target the ZCL way, not as Home Assistant's `target_temperature`. */
++export const VALVE_KEYS = ['occupied_heating_setpoint', 'system_mode'];
++
++const has = (d, key) => (d?.points ?? []).some((p) => p.key === key);
++
++/** A valve is a climate device that speaks the ZCL setpoint
++ *  (`deviceKind` in `home.svelte.js` reads `VALVE_KEYS` for the same reason). */
++export function isValve(d) {
++  return VALVE_KEYS.some((k) => has(d, k));
++}
++
++/** The valve of a room: the first valve whose room is that room. */
++export function valveIn(devices, room, roomOf) {
++  if (!room) return null;
++  const key = roomKey(room);
++  return devices.find((d) => isValve(d) && roomKey(roomOf(d)) === key) ?? null;
++}
++
++/** What the valve is doing, in the four states a household reads at a glance:
++ *  unplugged, shut, heating, and waiting. `null` when it says nothing at all
++ *  (no setpoint yet): a witness with no reading would be a lie.
++ *
++ *  `read` is `value(id, key)` from `home.svelte.js`. */
++export function witnessOf(d, read) {
++  if (!d) return null;
++  const setpoint = read(d.id, 'occupied_heating_setpoint');
++  const mode = read(d.id, 'system_mode');
++  const running = read(d.id, 'running_state');
++  if (typeof setpoint !== 'number' && mode == null) return null;
++  // A TRVZB states `running_state` the ZCL way: `heat` when the valve opens,
++  // `idle` when it closes — never `heating` (that is Home Assistant's word).
++  const heating = running === 'heat' || running === 'heating';
++  const state = d.online === false ? 'offline' : mode === 'off' ? 'off' : heating ? 'heating' : 'idle';
++  return { state, setpoint: typeof setpoint === 'number' ? setpoint : null };
++}
+diff --git a/web/src/maison/lib/trv.test.js b/web/src/maison/lib/trv.test.js
+new file mode 100644
+index 0000000..07c35ac
+--- /dev/null
++++ b/web/src/maison/lib/trv.test.js
+@@ -0,0 +1,70 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { isValve, valveIn, witnessOf } from './trv.js';
++import { roomKey } from './rooms.js';
++
++const valve = (id, room = null, online = null) => ({
++  id,
++  online,
++  label: room ? { room } : {},
++  points: [
++    { key: 'occupied_heating_setpoint', access: { read: true, write: true } },
++    { key: 'system_mode', access: { read: true, write: true } },
++    { key: 'running_state', access: { read: true, write: false } },
++  ],
++});
++
++const sensor = (id, room) => ({ id, label: { room }, points: [{ key: 'temperature', access: { read: true } }] });
++
++const roomOf = (d) => d?.label?.room ?? null;
++
++test('a TRV is recognised by its ZCL target, not by a brand', () => {
++  assert.equal(isValve(valve('z2m:a')), true);
++  assert.equal(isValve(sensor('z2m:b', 'Alicia')), false);
++  assert.equal(isValve(null), false);
++});
++
++test('rooms compare without accents or case', () => {
++  assert.equal(roomKey('Étage 1'), roomKey('etage 1'));
++  assert.equal(roomKey(' Alice '), roomKey('alice'));
++});
++
++test('the valve of a row is the one in that room', () => {
++  const devices = [sensor('z2m:s', 'Alicia'), valve('z2m:v', 'Parents'), valve('z2m:w', 'Alicia')];
++  assert.equal(valveIn(devices, 'Alicia', roomOf).id, 'z2m:w');
++  assert.equal(valveIn(devices, 'alicia', roomOf).id, 'z2m:w');
++  assert.equal(valveIn(devices, 'Cave', roomOf), null);
++  assert.equal(valveIn(devices, null, roomOf), null);
++});
++
++test('a heating valve says so, with its setpoint', () => {
++  // What a TRVZB really emits: `running_state` is `heat`, never `heating`.
++  const read = (_, k) => ({ occupied_heating_setpoint: 18.5, system_mode: 'auto', running_state: 'heat' })[k];
++  assert.deepEqual(witnessOf(valve('z2m:v'), read), { state: 'heating', setpoint: 18.5 });
++});
++
++test("Home Assistant's spelling of the same state still heats", () => {
++  const read = (_, k) => ({ occupied_heating_setpoint: 18.5, system_mode: 'auto', running_state: 'heating' })[k];
++  assert.deepEqual(witnessOf(valve('z2m:v'), read), { state: 'heating', setpoint: 18.5 });
++});
++
++test('a shut valve says it heats nothing, whatever the room does', () => {
++  const read = (_, k) => ({ occupied_heating_setpoint: 16, system_mode: 'off', running_state: 'heating' })[k];
++  assert.deepEqual(witnessOf(valve('z2m:v'), read), { state: 'off', setpoint: 16 });
++});
++
++test('an idle valve is at rest', () => {
++  const read = (_, k) => ({ occupied_heating_setpoint: 18.5, system_mode: 'auto', running_state: 'idle' })[k];
++  assert.deepEqual(witnessOf(valve('z2m:v'), read), { state: 'idle', setpoint: 18.5 });
++});
++
++test('an offline valve is offline first, even with a stale setpoint', () => {
++  const read = (_, k) => ({ occupied_heating_setpoint: 18.5, system_mode: 'auto', running_state: 'heating' })[k];
++  assert.equal(witnessOf(valve('z2m:v', null, false), read).state, 'offline');
++});
++
++test('a valve that says nothing earns no witness', () => {
++  const read = () => null;
++  assert.equal(witnessOf(valve('z2m:v'), read), null);
++  assert.equal(witnessOf(null, read), null);
++});
+diff --git a/web/src/maison/ui/TabletteRow.svelte b/web/src/maison/ui/TabletteRow.svelte
+index a66522c..b4e6fde 100644
+--- a/web/src/maison/ui/TabletteRow.svelte
++++ b/web/src/maison/ui/TabletteRow.svelte
+@@ -7,7 +7,9 @@
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+-  /** `subs` : pastilles de lecture, `{ icon, text, tone }`. `level` : la
++  /** `subs` : pastilles de lecture, `{ icon, text, tone, dot, label }` — `dot`
++   *  ajoute une pastille de couleur après le texte (l'état d'une vanne),
++   *  `label` nomme la pastille pour les lecteurs d'écran. `level` : la
+    *  grandeur montrée en pourcentage quand la commande est allumée. */
+   let { id, name = null, icon = 'light', subs = [], level = null, toggles = true } = $props();
+ 
+@@ -41,7 +43,7 @@
+ 
+   <span class="subs">
+     {#each subs as s (s.icon + s.text)}
+-      <span class="sub {s.tone ?? ''}" title={s.title ?? s.text}><Icon name={s.icon} size={13} />{s.text}</span>
++      <span class="sub {s.tone ?? ''}" title={s.title ?? s.text} role={s.label ? 'img' : undefined} aria-label={s.label}><Icon name={s.icon} size={13} />{s.text}{#if s.dot != null}<i class="dot {s.dot}" aria-hidden="true"></i>{/if}</span>
+     {/each}
+   </span>
+ </div>
+@@ -168,4 +170,27 @@
+     background: var(--good-soft);
+     color: var(--good);
+   }
++
++  /* L'état d'une vanne : un point de couleur après la consigne. Une vanne
++     éteinte a son propre point, gris plein — pas un point absent, qui se
++     lirait comme « rien à dire ». */
++  .sub .dot {
++    width: 7px;
++    height: 7px;
++    margin-left: 1px;
++    border-radius: 50%;
++    background: var(--ink-3);
++  }
++
++  .sub .dot.warm {
++    background: var(--warm-ink);
++  }
++
++  .sub .dot.cool {
++    background: var(--cool);
++  }
++
++  .sub .dot.alert {
++    background: var(--alert);
++  }
+ </style>
+diff --git a/web/src/maison/ui/TabletteRows.svelte b/web/src/maison/ui/TabletteRows.svelte
+index 6006317..be01e96 100644
+--- a/web/src/maison/ui/TabletteRows.svelte
++++ b/web/src/maison/ui/TabletteRows.svelte
+@@ -9,24 +9,22 @@
+   // régulière sur le nom), ou un `id` explicite ; `kind` filtre le genre,
+   // `pair` met deux rangées côte à côte, `toggles: false` rend la rangée
+   // en lecture seule, `level` affiche un pourcentage, `power` ajoute la
+-  // consommation d'une pince du Linky.
++  // consommation d'une pince du Linky, `valve` nomme la vanne thermostatique
++  // dont la rangée porte le témoin (à défaut, la vanne de sa pièce).
+   import { home, hub, value, device, nameOf, roomOf, deviceKind, tempIgnored } from '../lib/home.svelte.js';
++  import { roomKey } from '../lib/rooms.js';
++  import { powerTone } from '../lib/power.js';
+   import { t } from '../../lib/i18n.svelte.js';
++  import { valveIn, witnessOf } from '../lib/trv.js';
+   import TabletteRow from './TabletteRow.svelte';
+ 
+-  const norm = (s) =>
+-    String(s ?? '')
+-      .normalize('NFD')
+-      .replace(/\p{M}/gu, '')
+-      .toLowerCase();
+-
+   const devices = $derived(Object.values(hub.devices));
+ 
+   const byId = (id) => devices.find((d) => d.id === id) ?? null;
+ 
+   /** Le premier appareil de la pièce qui passe `test` (kind facultatif). */
+   function pick(room, test, kind = null) {
+-    const inRoom = devices.filter((d) => norm(roomOf(d)) === norm(room));
++    const inRoom = devices.filter((d) => roomKey(roomOf(d)) === roomKey(room));
+     const pool = kind ? inRoom.filter((d) => deviceKind(d) === kind) : inRoom;
+     return pool.find(test) ?? null;
+   }
+@@ -58,14 +56,16 @@
+   }
+ 
+   const readings = (sensor, extra = null) => {
+-    if (!sensor) return extra == null ? [] : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: 'cool' }];
++    // La même règle de couleur que le bandeau d'en-tête : un wattage n'a
++    // jamais deux couleurs sur le même écran.
++    const watt = extra == null || !Number.isFinite(Number(extra)) ? null : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: powerTone(extra) || 'cool' }];
++    if (!sensor) return watt ?? [];
+     const list = [];
+     const temp = value(sensor.id, 'temperature') ?? value(sensor.id, 'temp_current');
+     const hum = value(sensor.id, 'humidity') ?? value(sensor.id, 'humidity_value');
+     if (typeof temp === 'number') list.push({ icon: 'thermometer', text: `${temp.toFixed(1)}°` });
+     if (typeof hum === 'number') list.push({ icon: 'humidity', text: `${Math.round(hum)} %` });
+-    if (extra != null && Number.isFinite(Number(extra))) list.push({ icon: 'flash', text: `${Math.round(Math.abs(Number(extra)))} W`, tone: 'cool' });
+-    return list;
++    return [...list, ...(watt ?? [])];
+   };
+ 
+   /** La vitesse du ventilateur d'une rangée, quand il en a une. */
+@@ -76,6 +76,30 @@
+     return typeof v === 'number' ? { icon: 'fan', text: `${v} %` } : null;
+   }
+ 
++  // Les quatre états d'une vanne, chacun sa teinte de pastille : ce qu'elle
++  // fait se lit de loin, la consigne se lit de près.
++  const VANNE_DOT = { heating: 'warm', idle: 'cool', off: 'off', offline: 'alert' };
++  const VANNE_WORD = { heating: 'vanne_chauffe', idle: 'vanne_repos', off: 'vanne_eteinte', offline: 'vanne_hors_ligne' };
++
++  /** Le témoin d'une vanne thermostatique : son état en couleur, sa consigne
++   *  en clair. Purement visuel — on commande la vanne sur la page Chauffage.
++   *  Une pastille sans souris (une tablette) doit dire l'état : la consigne
++   *  seule quand elle chauffe ou attend, le mot quand elle ne fait rien
++   *  (éteinte, hors ligne), et toujours en `aria-label`. */
++  function witnessOfRow(def) {
++    // Une vanne nommée mais absente (identifiant périmé) retombe sur celle de
++    // la pièce : la rangée garde son témoin plutôt que de le perdre en silence.
++    const valve = (def.valve ? byId(def.valve) : null) ?? valveIn(devices, def.room ?? def.sensor_room, roomOf);
++    const w = witnessOf(valve, value);
++    if (!w) return null;
++    const etat = t(`maison.accueil.${VANNE_WORD[w.state]}`);
++    const temp = w.setpoint == null ? null : `${w.setpoint.toFixed(1)}°`;
++    const talking = w.state === 'heating' || w.state === 'idle';
++    const text = talking ? (temp ?? etat) : etat;
++    const title = temp ? t('maison.accueil.vanne_titre', { etat, temp }) : t('maison.accueil.vanne_titre_seule', { etat });
++    return { icon: 'radiator', text, dot: VANNE_DOT[w.state], title, label: title };
++  }
++
+   // Une rangée prête à rendre : l'appareil résolu, son nom, ses pastilles.
+   // Une entrée introuvable (appareil absent, pièce vide) est sautée : pas
+   // de rangée fantôme.
+@@ -85,6 +109,7 @@
+       if (!d) return [];
+       const extra = def.power ? value(home.config?.badges?.linky ?? 'linky:linky', def.power) : null;
+       const fan = fanOf(d);
++      const vanne = witnessOfRow(def);
+       const label = def.nkey ? t(def.nkey) : (def.name ?? nameOf(d.id));
+       return [
+         {
+@@ -95,7 +120,7 @@
+           level: def.level ?? null,
+           toggles: def.toggles !== false,
+           pair: def.pair === true,
+-          subs: [...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra)],
++          subs: [...(vanne ? [vanne] : []), ...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra)],
+         },
+       ];
+     }),

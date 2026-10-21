@@ -184,6 +184,8 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 | 5 | `accueil-plan-pins.patch` | `notes/accueil-plan-pins.md` — jetons réduits, sans relevés, filtrés |
 | 6 | `chauffage-trv.patch` | `notes/chauffage-trv.md` — hors Accueil, page `#/chauffage` |
 | 7 | `chauffage-trv-zones.patch` | `notes/chauffage-trv.md` — axe horaire, paliers nommés Confort/Réduit/Personnalisé, édition sur place |
+| 8 | `accueil-trv-witness.patch` | `notes/accueil-trv-witness.md` — témoin de vanne sur la rangée Chambre (état + consigne, non cliquable), rangée Appart sur la puissance résiduelle (watts seuls, sans mention) ; **+ 2 clés dans `data/home.json`, hors patch** |
+| 9 | `accueil-badges-rebuild.patch` | `notes/accueil-badges-rebuild.md` — bandeau de pastilles reconstruit : Tempo + 2 puissances + prises, neutre par défaut, aligné sur les colonnes |
 
 Hors chaîne, côté **moteur** : `notes/patches/moteur-stale-rule.patch` — ajoute
 `Rule::Stale { point, for_s }` (« ce capteur ne dit plus rien depuis N »), la seule
@@ -194,7 +196,9 @@ déjà compilé dans l'image.
 
 `accueil-tablette2025-pixel` **doit** passer après `accueil-plan-hero` : sur une base
 `parity` seule il échoue (`Accueil.svelte:190`), la carte Plan devant déjà être dans
-`SkyHero`. Appliquer les sept dans cet ordre, sans en sauter un.
+`SkyHero`. Appliquer les sept dans cet ordre, sans en sauter un, puis le n° 8
+(`accueil-trv-witness`, qui part de leur état), puis le n° 9 (`accueil-badges-rebuild`,
+qui reprend le bandeau de pastilles).
 
 **`accueil-plan-pins.patch`** : sur la carte Plan de l'Accueil, **retire les relevés**
 (pas de `.reading` : `pinReading` n'est plus importé), **réduit les jetons** (34 → 22 px,
@@ -312,6 +316,8 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `accueil-tablette2025-pixel.md` | Refonte du tableau de bord tablette : `Accueil.svelte` réécrit + 5 composants (`BatteryGauge`, `CameraCard`, `TabletteRow(s)`, `WeatherNow`) — patch `accueil-tablette2025-pixel` (n° 4 de la chaîne, **après** `accueil-plan-hero`) |
 | `accueil-plan-pins.md` | Jetons du Plan de l'Accueil réduits (22 px) **sans aucun relevé**, filtrés sur les appareils utiles (16 → 8) — patch `accueil-plan-pins` (n° 5 de la chaîne) |
 | `chauffage-trv.md` | Page **Chauffage** : consigne, table horaire hebdomadaire (7 pistes, 15 min) et choix programme/automatisations/éteinte par vanne — patch `chauffage-trv` (n° 6) + `chauffage-trv-zones` (n° 7 : axe horaire, paliers Confort/Réduit/Personnalisé, édition sur place) |
+| `accueil-trv-witness.md` | Témoin de vanne thermostatique sur la rangée **Chambre** de l'Accueil (point de couleur + consigne, non cliquable ; « éteinte »/« hors ligne » écrits) et rangée **Appart** sur la puissance **résiduelle**, en watts seuls — patch `accueil-trv-witness` (n° 8) |
+| `accueil-badges-rebuild.md` | Bandeau de pastilles de l'Accueil reconstruit depuis la version d'origine : Tempo (jour + demain), 2 puissances, prises ; alarmes et contacts retirés, neutre par défaut (couleur = anomalie seule), aligné sur les colonnes — patch `accueil-badges-rebuild` (n° 9) |
 | `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero` (n° 3 de la chaîne) |
 | `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
 | `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |

@@ -1,0 +1,259 @@
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+index 8a9ac85..dc78737 100644
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -191,7 +191,8 @@
+   "maison.meteo.credit": "Forecast by Open-Meteo. The orange dot is the house.",
+   "maison.accueil.badges": "Badges",
+   "maison.accueil.badges_tempo": "EDF Tempo colour",
+-  "maison.accueil.badges_tempo_demain": "tom.",
++  "maison.accueil.badges_tempo_jour": "today",
++  "maison.accueil.badges_tempo_demain": "tmrw",
+   "maison.tempo.bleu": "blue",
+   "maison.tempo.blanc": "white",
+   "maison.tempo.rouge": "red",
+@@ -222,14 +223,6 @@
+   "maison.wifi.bbox": "Bbox — 2.4 GHz Wi-Fi",
+   "maison.wifi.mercusys": "Mercusys — repeater",
+   "maison.wifi.scan": "Scan with your phone camera to join the network.",
+-  "maison.accueil.badge_alarme_indisponible": "{name} — no Moli driver",
+-  "maison.accueil.alarme_maison": "House alarm",
+-  "maison.accueil.alarme_grange": "Barn alarm",
+-  "maison.accueil.badge_baie": "Patio door",
+-  "maison.accueil.badge_atelier": "Workshop",
+-  "maison.accueil.badge_grange": "Barn",
+-  "maison.accueil.badge_boite": "Mailbox",
+-  "maison.accueil.badge_contact_inconnu": "Contact: unknown state",
+   "maison.accueil.badge_appart": "Flat power draw",
+   "maison.accueil.badge_residuel": "Rest of the house draw",
+   "maison.accueil.poubelle_jaune_court": "Recycling",
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+index c112884..192422a 100644
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -198,6 +198,7 @@
+   "maison.meteo.credit": "Prévisions Open-Meteo. Le point orange, c’est la maison.",
+   "maison.accueil.badges": "Badges",
+   "maison.accueil.badges_tempo": "Couleur Tempo EDF",
++  "maison.accueil.badges_tempo_jour": "auj.",
+   "maison.accueil.badges_tempo_demain": "dem.",
+   "maison.tempo.bleu": "bleu",
+   "maison.tempo.blanc": "blanc",
+@@ -222,14 +223,6 @@
+   "maison.wifi.bbox": "Bbox — Wi-Fi 2,4 GHz",
+   "maison.wifi.mercusys": "Mercusys — répéteur",
+   "maison.wifi.scan": "Scannez avec l’appareil photo du téléphone pour rejoindre le réseau.",
+-  "maison.accueil.badge_alarme_indisponible": "{name} — pas de pilote Moli",
+-  "maison.accueil.alarme_maison": "Alarme maison",
+-  "maison.accueil.alarme_grange": "Alarme grange",
+-  "maison.accueil.badge_baie": "Baie vitrée",
+-  "maison.accueil.badge_atelier": "Atelier",
+-  "maison.accueil.badge_grange": "Grange",
+-  "maison.accueil.badge_boite": "Boîte aux lettres",
+-  "maison.accueil.badge_contact_inconnu": "Contact : état inconnu",
+   "maison.accueil.badge_appart": "Puissance de l'appartement",
+   "maison.accueil.badge_residuel": "Puissance du reste de la maison",
+   "maison.accueil.poubelle_jaune_court": "Recyclage",
+diff --git a/web/src/maison/ui/AccueilBadges.svelte b/web/src/maison/ui/AccueilBadges.svelte
+index 69977f1..3579a46 100644
+--- a/web/src/maison/ui/AccueilBadges.svelte
++++ b/web/src/maison/ui/AccueilBadges.svelte
+@@ -1,50 +1,16 @@
+ <script>
+-  // La rangée de pastilles de la tablette : l'alarme, les quatre contacts,
+-  // Tempo, la consommation de l'appartement et du reste de la maison, puis
+-  // les appareils qu'on commande d'un tap. Une seule ligne, 36 px de haut,
+-  // qui défile si l'écran est étroit.
+-  import { home, hub, value, isOn, toggle, nameOf, doorOpen, pending } from '../lib/home.svelte.js';
++  // La rangée de pastilles de la tablette : Tempo, la consommation de
++  // l'appartement et du reste de la maison, puis les appareils qu'on
++  // commande d'un tap. Une seule ligne, 36 px de haut, alignée sur les
++  // colonnes de cartes, qui défile si l'écran est étroit.
++  // Neutre par défaut : la couleur ne dit qu'une anomalie (puissance qui
++  // monte), jamais « tout va bien ».
++  import { home, value, isOn, toggle, pending } from '../lib/home.svelte.js';
++  import { powerTone } from '../lib/power.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+-  const CONTACT = ['contact', 'doorcontact_state'];
+-  const hasContact = (d) => d.points.some((p) => CONTACT.includes(p.key));
+-
+-  // Les alarmes de la tablette (maison, grange). Moli n'a pas de pilote
+-  // d'alarme : tant que la configuration n'en nomme pas, chaque pastille
+-  // reste muette et le dit — deux pastilles, deux endroits, jamais deux
+-  // fois la même.
+-  const ALARMS = [
+-    { key: 'maison', label: 'maison.accueil.alarme_maison' },
+-    { key: 'grange', label: 'maison.accueil.alarme_grange' },
+-  ];
+-  const alarms = $derived.by(() => {
+-    const listed = home.config?.badges?.alarms ?? [];
+-    return ALARMS.map((a, i) => ({ ...a, id: listed[i]?.id ?? null }));
+-  });
+-
+-  // Les quatre contacts de la maison, dans l'ordre de la tablette : la
+-  // baie, l'atelier, la grange, la boîte aux lettres. La configuration
+-  // (`doors`) donne l'ordre et les noms ; les autres sortent d'eux-mêmes.
+-  const CONTACTS = [
+-    { key: 'baie', icon: 'door', label: 'maison.accueil.badge_baie', match: /porte-?fen|sliding/i },
+-    { key: 'atelier', icon: 'atelier', label: 'maison.accueil.badge_atelier', match: /atelier/i },
+-    { key: 'grange', icon: 'home-roof', label: 'maison.accueil.badge_grange', match: /grange|garage/i },
+-    { key: 'boite', icon: 'package', label: 'maison.accueil.badge_boite', match: /boite|boîte|mailbox/i },
+-  ];
+-
+-  const contacts = $derived.by(() => {
+-    const listed = home.config?.doors ?? [];
+-    const pool = [...listed.map((d) => ({ id: d.id, name: d.name })), ...Object.values(hub.devices).filter((d) => hasContact(d)).map((d) => ({ id: d.id, name: nameOf(d.id) }))];
+-    const seen = new Set();
+-    return CONTACTS.map((c) => {
+-      const hit = pool.find((p) => !seen.has(p.id) && (c.match.test(p.name ?? '') || c.match.test(p.id)));
+-      if (hit) seen.add(hit.id);
+-      return { ...c, id: hit?.id ?? null };
+-    });
+-  });
+-
+-  // Tempo (EDF) : la couleur du jour et celle de demain.
++  // Tempo (EDF) : la couleur du jour et celle de demain, dans une pastille.
+   const COLOURS = ['bleu', 'blanc', 'rouge'];
+   const known = (c) => COLOURS.includes(c);
+   const tempoId = $derived(home.config?.outdoor?.tempo ?? null);
+@@ -58,54 +24,28 @@
+     const v = value(linky, key);
+     return typeof v === 'number' ? `${Math.round(Math.abs(v))} W` : '—';
+   };
+-  const appartTone = $derived.by(() => {
+-    const v = Number(value(linky, 'power_appart'));
+-    if (!Number.isFinite(v)) return '';
+-    const w = Math.abs(v);
+-    return w < 1000 ? 'good' : w < 3000 ? 'warm' : 'alert';
+-  });
++  const tone = (key) => powerTone(value(linky, key));
+ 
+   const switches = $derived(home.config?.badges?.switches ?? []);
+ </script>
+ 
+ <nav class="badges" aria-label={t('maison.accueil.badges')}>
+-  {#each alarms as a (a.key)}
+-    {@const state = a.id ? value(a.id, 'alarm') : null}
+-    <span class="badge" class:silent={state == null} class:alert={state === 'on' || state === true} class:good={state === 'off' || state === false} title={state == null ? t('maison.accueil.badge_alarme_indisponible', { name: t(a.label) }) : t(a.label)}>
+-      <Icon name="shield" size={16} />{state == null ? '—' : t(a.label)}
+-    </span>
+-  {/each}
+-
+-  {#each contacts as c (c.key)}
+-    {@const open = c.id ? doorOpen(c.id) === true : null}
+-    {#if open == null}
+-      <span class="badge silent" title={t('maison.accueil.badge_contact_inconnu')}>
+-        <Icon name={c.icon} size={16} />—
+-      </span>
+-    {:else}
+-      <a class="badge" class:alert={open} class:good={!open} href="#/pieces" title={t(c.label)}>
+-        <Icon name={open ? 'door-open' : c.icon} size={16} />
+-      </a>
+-    {/if}
+-  {/each}
+-
+   {#if known(tempoDay)}
+-    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo')}>
+-      <i class="dot {tempoDay}" aria-hidden="true"></i>{tempoName(tempoDay)}
+-    </a>
+-  {/if}
+-
+-  {#if known(tempoNext)}
+-    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo_demain')}>
+-      <i class="dot {tempoNext}" aria-hidden="true"></i>{tempoName(tempoNext)}
++    <a class="badge tempo" href="#/energie" title={t('maison.accueil.badges_tempo')} aria-label={`${t('maison.accueil.badges_tempo')} : ${t('maison.accueil.badges_tempo_jour')} ${tempoName(tempoDay)}${known(tempoNext) ? `, ${t('maison.accueil.badges_tempo_demain')} ${tempoName(tempoNext)}` : ''}`}>
++      <i class="dot {tempoDay}" aria-hidden="true"></i>
++      <span class="tl">{t('maison.accueil.badges_tempo_jour')}</span>{tempoName(tempoDay)}
++      {#if known(tempoNext)}
++        <i class="dot {tempoNext}" aria-hidden="true"></i>
++        <span class="tl">{t('maison.accueil.badges_tempo_demain')}</span>{tempoName(tempoNext)}
++      {/if}
+     </a>
+   {/if}
+ 
+-  <a class="badge {appartTone}" href="#/energie" title={t('maison.accueil.badge_appart')}>
++  <a class="badge {tone('power_appart')}" href="#/energie" title={t('maison.accueil.badge_appart')}>
+     <Icon name="flash" size={16} />{watts('power_appart')}
+   </a>
+ 
+-  <a class="badge" href="#/energie" title={t('maison.accueil.badge_residuel')}>
++  <a class="badge {tone('power_residuel')}" href="#/energie" title={t('maison.accueil.badge_residuel')}>
+     <Icon name="bolt" size={16} />{watts('power_residuel')}
+   </a>
+ 
+@@ -125,6 +65,20 @@
+     overflow-x: auto;
+     scrollbar-width: none;
+     min-width: 0;
++    width: 100%;
++    /* La largeur de la grille de cartes de l'Accueil : une colonne de
++       464 px tant qu'elles ne tiennent pas côte à côte, deux colonnes
++       (2 × 464 + 32 = 960 px) au-dessus de 1100 px — mêmes bornes que
++       `.sections`. Le bandeau s'aligne sur les colonnes, jamais sur la
++       page entière ; s'il ne tient pas, il défile. */
++    max-width: 464px;
++    margin-inline: auto;
++  }
++
++  @media (min-width: 1100px) {
++    .badges {
++      max-width: 960px;
++    }
+   }
+ 
+   .badge {
+@@ -143,15 +97,9 @@
+     color: var(--ink-3);
+     text-decoration: none;
+     cursor: pointer;
+-    box-shadow: var(--shadow);
+     transition: background 0.2s var(--ease), color 0.2s var(--ease);
+   }
+ 
+-  .badge.good {
+-    background: var(--good-soft);
+-    color: var(--good);
+-  }
+-
+   .badge.warm {
+     background: var(--warm-soft);
+     color: var(--warm-ink);
+@@ -162,12 +110,6 @@
+     color: var(--alert);
+   }
+ 
+-  .badge.silent {
+-    color: var(--ink-3);
+-    opacity: 0.7;
+-    cursor: default;
+-  }
+-
+   .badge.on {
+     background: var(--warm);
+     color: #fff;
+@@ -183,11 +125,21 @@
+     color: var(--ink-2);
+   }
+ 
++  .badge.tempo .tl {
++    color: var(--ink-3);
++    font-weight: 600;
++  }
++
+   .badge.tempo .dot {
+-    width: 9px;
+-    height: 9px;
++    width: 10px;
++    height: 10px;
+     border-radius: 50%;
+     background: var(--ink-3);
++    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
++  }
++
++  .badge.tempo .dot + .tl {
++    margin-left: 3px;
+   }
+ 
+   .badge.tempo .dot.bleu {
