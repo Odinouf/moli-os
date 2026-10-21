@@ -1,0 +1,2154 @@
+diff --git a/web/src/App.svelte b/web/src/App.svelte
+--- a/web/src/App.svelte
++++ b/web/src/App.svelte
+@@ -1,5 +1,6 @@
+ <script>
+   import { onMount } from 'svelte';
++  import { hub } from './lib/hub.svelte.js';
+   import Maison from './maison/Maison.svelte';
+   import Atelier from './Atelier.svelte';
+ 
+@@ -9,7 +10,12 @@
+   let route = $state(read());
+ 
+   onMount(() => {
+-    const update = () => (route = read());
++    const update = () => {
++      // Le point ouvert appartient à la page qui l'a demandé : changer de
++      // page referme la feuille, sinon elle réapparaîtrait sur l'Accueil.
++      hub.chart = null;
++      route = read();
++    };
+     addEventListener('hashchange', update);
+     return () => removeEventListener('hashchange', update);
+   });
+diff --git a/web/package.json b/web/package.json
+--- a/web/package.json
++++ b/web/package.json
+@@ -6,7 +6,7 @@
+   "scripts": {
+     "dev": "vite",
+     "build": "vite build",
+-    "test": "node --test \"src/maison/lib/**/*.test.js\""
++    "test": "node --test \"src/**/*.test.js\""
+   },
+   "devDependencies": {
+     "@fontsource-variable/figtree": "^5.3.0",
+diff --git a/web/src/components/HistoryPanel.svelte b/web/src/components/HistoryPanel.svelte
+--- a/web/src/components/HistoryPanel.svelte
++++ b/web/src/components/HistoryPanel.svelte
+@@ -2,6 +2,7 @@
+   import { hub } from '../lib/hub.svelte.js';
+   import { deviceName, formatValue, unitOf } from '../lib/format.js';
+   import { t, locale } from '../lib/i18n.svelte.js';
++  import { seriesData, scaleFor, stepPath, bandPath, ticksFor, xTicksFor } from '../lib/history.js';
+ 
+   let { point: pointId, onclose } = $props();
+ 
+@@ -35,68 +36,27 @@
+ 
+   const toNum = (v) => (typeof v === 'boolean' ? Number(v) : typeof v === 'number' ? v : null);
+ 
+-  // Points to draw: [ts, value, min, max].
+-  const data = $derived.by(() => {
+-    if (!series) return [];
+-    const points = series.buckets.length
+-      ? series.buckets.map((b) => [b.ts, b.avg, b.min, b.max])
+-      : series.raw.map(([ts, v]) => [ts, toNum(v), toNum(v), toNum(v)]);
+-    // The value held when the window opens: the line starts at `from`.
+-    if (series.before) {
+-      const v = toNum(series.before[1]);
+-      points.unshift([series.from, v, v, v]);
+-    }
+-    return points.filter((d) => d[1] !== null);
+-  });
++  // Points to draw: [ts, value, min, max] — the shared geometry, same as the
++  // house sheet: two skins, one computation.
++  const data = $derived(seriesData(series));
+ 
+   const binary = $derived(spec?.kind.type === 'binary');
+   const textual = $derived(series && data.length === 0 && series.raw.length > 0);
+ 
+-  const scale = $derived.by(() => {
+-    if (!series || !data.length) return null;
+-    const lo = binary ? 0 : Math.min(...data.map((d) => d[2]));
+-    const hi = binary ? 1 : Math.max(...data.map((d) => d[3]));
+-    const span = hi - lo || Math.abs(hi) || 1;
+-    const y0 = binary ? 0 : lo - span * 0.08;
+-    const y1 = binary ? 1 : hi + span * 0.08;
+-    const x = (ts) => PAD.l + ((ts - series.from) / (series.to - series.from)) * (W - PAD.l - PAD.r);
+-    const y = (v) => PAD.t + (1 - (v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
+-    return { x, y, y0, y1 };
+-  });
++  const scale = $derived(scaleFor(series, data, PAD, { w: W, h: H }, binary));
+ 
+   // Step path: a value holds until the next change, then to "now".
+-  const line = $derived.by(() => {
+-    if (!scale) return '';
+-    let d = '';
+-    data.forEach(([ts, v], i) => {
+-      const px = scale.x(ts);
+-      const py = scale.y(v);
+-      d += i === 0 ? `M${px},${py}` : `H${px}V${py}`;
+-    });
+-    return d + `H${scale.x(series.to)}`;
+-  });
++  const line = $derived(stepPath(scale, data, series?.to));
+ 
+-  const band = $derived.by(() => {
+-    if (!scale || !series.buckets.length) return '';
+-    const top = data.map(([ts, , , max]) => `${scale.x(ts)},${scale.y(max)}`);
+-    const bottom = data.map(([ts, , min]) => `${scale.x(ts)},${scale.y(min)}`).reverse();
+-    return `M${top.join('L')}L${bottom.join('L')}Z`;
+-  });
++  const band = $derived(bandPath(scale, data, !!series?.buckets?.length));
+ 
+-  const ticks = $derived.by(() => {
+-    if (!scale) return [];
+-    if (binary) return [0, 1];
+-    const n = 4;
+-    return Array.from({ length: n + 1 }, (_, i) => scale.y0 + ((scale.y1 - scale.y0) * i) / n);
+-  });
++  const ticks = $derived(ticksFor(scale, binary));
+ 
+   const nf = $derived(new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }));
+   const timeFmt = $derived(
+     new Intl.DateTimeFormat(locale(), hours > 24 ? { weekday: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }),
+   );
+-  const xTicks = $derived(
+-    series ? Array.from({ length: 5 }, (_, i) => series.from + ((series.to - series.from) * i) / 4) : [],
+-  );
++  const xTicks = $derived(xTicksFor(series, 4));
+ 
+   function onkey(e) {
+     if (e.key === 'Escape') onclose();
+diff --git a/web/src/lib/history.js b/web/src/lib/history.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/lib/history.js
+@@ -0,0 +1,92 @@
++// La géométrie d'un historique : une seule implémentation, deux habillages
++// (la feuille de la Maison et le panneau de l'Atelier dessinent les mêmes
++// courbes). Rien ici ne touche au DOM : tout se calcule à partir de la
++// réponse de `/api/history`, donc tout se teste.
++
++/** Une valeur d'historique en nombre, ou null si elle ne se dessine pas. */
++export function toNum(v) {
++  if (typeof v === 'boolean') return Number(v);
++  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
++  return null;
++}
++
++/** Points à dessiner : `[ts, valeur, min, max]`, la valeur tenue en tête. */
++export function seriesData(series) {
++  if (!series) return [];
++  const points = series.buckets?.length
++    ? series.buckets.map((b) => [b.ts, b.avg, b.min, b.max])
++    : (series.raw ?? []).map(([ts, v]) => {
++        const n = toNum(v);
++        return [ts, n, n, n];
++      });
++  if (series.before) {
++    const v = toNum(series.before[1]);
++    if (v !== null) points.unshift([series.from, v, v, v]);
++  }
++  return points.filter((p) => p[1] !== null);
++}
++
++/** Échelle : `x(ts)`, `y(valeur)` et les bornes réellement dessinées.
++ *  Un binaire tient sur 0..1 — sans marge, ses deux paliers restent lisibles. */
++export function scaleFor(series, data, pad, size, binary = false) {
++  if (!series || !data.length) return null;
++  const values = data.map((p) => p[1]);
++  const mins = data.map((p) => p[2]);
++  const maxs = data.map((p) => p[3]);
++  const lo = binary ? 0 : Math.min(...mins, ...values);
++  const hi = binary ? 1 : Math.max(...maxs, ...values);
++  const span = hi - lo || Math.abs(hi) || 1;
++  const y0 = binary ? 0 : lo - span * 0.08;
++  const y1 = binary ? 1 : hi + span * 0.08;
++  const width = size.w - pad.l - pad.r;
++  const height = size.h - pad.t - pad.b;
++  const from = series.from;
++  const to = series.to;
++  const x = (ts) => pad.l + ((ts - from) / (to - from || 1)) * width;
++  const y = (v) => pad.t + (1 - (v - y0) / (y1 - y0 || 1)) * height;
++  return { x, y, y0, y1 };
++}
++
++/** Escalier : une valeur tient jusqu'au changement suivant, puis jusqu'à
++ *  maintenant. Un capteur ne glisse pas, il saute. */
++export function stepPath(scale, data, endTs) {
++  if (!scale || !data.length) return '';
++  let d = '';
++  data.forEach(([ts, v], i) => {
++    const px = scale.x(ts);
++    const py = scale.y(v);
++    d += i === 0 ? `M${px},${py}` : `H${px}V${py}`;
++  });
++  return `${d}H${scale.x(endTs)}`;
++}
++
++/** Bande min/max des tranches (l'épaisseur de la mesure sur la période). */
++export function bandPath(scale, data, buckets) {
++  if (!scale || !buckets) return '';
++  const top = data.map(([ts, , , max]) => `${scale.x(ts)},${scale.y(max)}`);
++  const bottom = data.map(([ts, , min]) => `${scale.x(ts)},${scale.y(min)}`).reverse();
++  return `M${top.join('L')}L${bottom.join('L')}Z`;
++}
++
++/** Graduations de l'axe vertical : deux pour un binaire, cinq sinon. */
++export function ticksFor(scale, binary = false, n = 4) {
++  if (!scale) return [];
++  if (binary) return [0, 1];
++  return Array.from({ length: n + 1 }, (_, i) => scale.y0 + ((scale.y1 - scale.y0) * i) / n);
++}
++
++/** Graduations de l'axe horizontal, régulièrement réparties. */
++export function xTicksFor(series, n = 4) {
++  if (!series) return [];
++  return Array.from({ length: n + 1 }, (_, i) => series.from + ((series.to - series.from) * i) / n);
++}
++
++/** Synthèse d'une série : la dernière valeur, le min et le max observés. */
++export function statsFor(data) {
++  if (!data.length) return null;
++  return {
++    last: data.at(-1)[1],
++    min: Math.min(...data.map((p) => p[2])),
++    max: Math.max(...data.map((p) => p[3])),
++  };
++}
+diff --git a/web/src/lib/history.test.js b/web/src/lib/history.test.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/lib/history.test.js
+@@ -0,0 +1,131 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import {
++  toNum,
++  seriesData,
++  scaleFor,
++  stepPath,
++  bandPath,
++  ticksFor,
++  xTicksFor,
++  statsFor,
++} from './history.js';
++
++const PAD = { l: 40, r: 10, t: 10, b: 24 };
++const SIZE = { w: 560, h: 180 };
++
++const numericSeries = (raw, from = 0, to = 1000) => ({ from, to, raw, buckets: [], before: null, total: raw.length });
++
++test('toNum renders booleans as 0/1 and rejects anything else', () => {
++  assert.equal(toNum(true), 1);
++  assert.equal(toNum(false), 0);
++  assert.equal(toNum(20.5), 20.5);
++  assert.equal(toNum('open'), null);
++  assert.equal(toNum(null), null);
++  assert.equal(toNum(NaN), null);
++});
++
++test('seriesData maps raw points and drops undrawable values', () => {
++  const data = seriesData(numericSeries([[0, 20], [10, 'open'], [20, 21]]));
++  assert.deepEqual(data, [
++    [0, 20, 20, 20],
++    [20, 21, 21, 21],
++  ]);
++});
++
++test('seriesData maps buckets with their min and max', () => {
++  const series = { from: 0, to: 100, total: 6, before: null, raw: [], buckets: [{ ts: 0, avg: 0.5, min: 0, max: 1, count: 6 }] };
++  assert.deepEqual(seriesData(series), [[0, 0.5, 0, 1]]);
++});
++
++test('seriesData prepends the value held at the window opening', () => {
++  const series = { ...numericSeries([[100, 21]]), before: [0, 20] };
++  assert.deepEqual(seriesData(series), [
++    [0, 20, 20, 20],
++    [100, 21, 21, 21],
++  ]);
++});
++
++test('scaleFor maps the window onto the padded box', () => {
++  const series = numericSeries([], 0, 1000);
++  const data = [
++    [0, 20, 20, 20],
++    [1000, 22, 22, 22],
++  ];
++  const scale = scaleFor(series, data, PAD, SIZE);
++  assert.equal(Math.round(scale.x(0)), PAD.l);
++  assert.equal(Math.round(scale.x(1000)), SIZE.w - PAD.r);
++  assert.ok(scale.y(20) > scale.y(22), 'a higher value sits higher');
++});
++
++test('scaleFor keeps a binary on 0..1 whatever the padding', () => {
++  const series = numericSeries([], 0, 1000);
++  const data = [
++    [0, 0, 0, 0],
++    [1000, 1, 1, 1],
++  ];
++  const scale = scaleFor(series, data, PAD, SIZE, true);
++  assert.equal(scale.y0, 0);
++  assert.equal(scale.y1, 1);
++  assert.equal(Math.round(scale.y(1)), PAD.t);
++  assert.equal(Math.round(scale.y(0)), SIZE.h - PAD.b);
++});
++
++test('scaleFor survives an empty series and a flat line', () => {
++  assert.equal(scaleFor(numericSeries([]), [], PAD, SIZE), null);
++  const flat = scaleFor(numericSeries([]), [[0, 5, 5, 5]], PAD, SIZE);
++  assert.ok(Number.isFinite(flat.y(5)));
++});
++
++test('stepPath draws a step and holds the last value to now', () => {
++  const series = numericSeries([], 0, 1000);
++  const data = [
++    [0, 0, 0, 0],
++    [500, 1, 1, 1],
++  ];
++  const scale = scaleFor(series, data, PAD, SIZE, true);
++  const d = stepPath(scale, data, 1000);
++  assert.ok(d.startsWith('M'));
++  assert.ok(d.includes('H'));
++  assert.ok(d.includes('V'));
++  assert.ok(d.endsWith(`H${scale.x(1000)}`));
++  assert.equal(stepPath(null, data, 1000), '');
++});
++
++test('bandPath wraps min/max, and stays empty without buckets', () => {
++  const series = numericSeries([], 0, 1000);
++  const data = [
++    [0, 0.5, 0, 1],
++    [500, 0.5, 0.2, 0.8],
++  ];
++  const scale = scaleFor(series, data, PAD, SIZE);
++  assert.ok(bandPath(scale, data, true).endsWith('Z'));
++  assert.equal(bandPath(scale, data, false), '');
++});
++
++test('ticksFor gives two graduations for a binary, five otherwise', () => {
++  const series = numericSeries([], 0, 1000);
++  const data = [[0, 0, 0, 0]];
++  const scale = scaleFor(series, data, PAD, SIZE);
++  assert.deepEqual(ticksFor(scale, true), [0, 1]);
++  assert.equal(ticksFor(scale, false).length, 5);
++  assert.deepEqual(ticksFor(null), []);
++});
++
++test('xTicksFor spreads the graduations over the window', () => {
++  const ticks = xTicksFor(numericSeries([], 1000, 2000));
++  assert.equal(ticks.length, 5);
++  assert.equal(ticks[0], 1000);
++  assert.equal(ticks.at(-1), 2000);
++  assert.deepEqual(xTicksFor(null), []);
++});
++
++test('statsFor reports the last value, the min and the max', () => {
++  const stats = statsFor([
++    [0, 20, 19, 21],
++    [10, 22, 21, 23],
++  ]);
++  assert.deepEqual(stats, { last: 22, min: 19, max: 23 });
++  assert.equal(statsFor([]), null);
++});
+diff --git a/web/src/maison/Maison.svelte b/web/src/maison/Maison.svelte
+--- a/web/src/maison/Maison.svelte
++++ b/web/src/maison/Maison.svelte
+@@ -20,6 +20,7 @@
+   import Wifi from './pages/Wifi.svelte';
+   import Moli from './pages/Moli.svelte';
+   import MoliSheet from './moli/MoliSheet.svelte';
++  import HistorySheet from './ui/HistorySheet.svelte';
+   import Automatismes from './pages/Automatismes.svelte';
+   import Systeme from './pages/Systeme.svelte';
+   import Parler from './pages/Parler.svelte';
+@@ -204,6 +205,11 @@
+     <MoliSheet onclose={() => (moliOpen = false)} />
+   {/if}
+ 
++  {#if hub.chart}
++    <!-- Le même état que l'Atelier : un chiffre tapé ouvre son historique. -->
++    <HistorySheet point={hub.chart} onclose={() => (hub.chart = null)} />
++  {/if}
++
+   {#if home.held}
+     <PinSheet />
+   {/if}
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -73,6 +73,34 @@
+   return hub.devices[id]?.state?.[key]?.ts ?? null;
+ }
+ 
++// ---- history -------------------------------------------------------------------
++
++/** The key a device really reports, from the names its brand may use:
++ *  `readingPoint(id, ['temperature', 'temp_current'])`. A point the device
++ *  does not have is never invented. */
++export function readingPoint(id, candidates) {
++  const d = device(id);
++  if (!d) return null;
++  return candidates.find((k) => d.points?.some((p) => p.key === k)) ?? null;
++}
++
++/** Opens the history of one reading (`hub.chart`, the same state the
++ *  Atelier uses). Nothing happens when the device or the point is absent:
++ *  a tapped figure must not open an empty sheet. */
++export function historyOf(id, key) {
++  const d = device(id);
++  if (!d || !key) return false;
++  if (!d.points?.some((p) => p.key === key)) return false;
++  hub.chart = `${id}/${key}`;
++  return true;
++}
++
++/** Opens the first reading the device really has, among `candidates`. */
++export function historyOfAny(id, candidates) {
++  const key = readingPoint(id, candidates);
++  return key ? historyOf(id, key) : false;
++}
++
+ // What a sensor says, whatever its brand: Zigbee (`contact` true when
+ // closed, `water_leak`), Tuya (`doorcontact_state` true when open,
+ // `watersensor_state` « alarm », `pir` « pir », `battery_state` « low »).
+@@ -108,6 +136,46 @@
+   return fallback || d?.label?.name || d?.native_name || t('commun.appareil');
+ }
+ 
++/** Le nom d'un appareil tel qu'on le lit à voix haute : jamais une adresse
++ *  Zigbee ni un identifiant technique. `nameOf` reste la vérité du pilote
++ *  (l'Atelier en a besoin) ; ici on préfère la pièce, puis « Appareil ». */
++export function spokenNameOf(id, fallback) {
++  if (fallback) return fallback;
++  const d = device(id);
++  const named = d?.label?.name || d?.native_name;
++  const technical = (s) => !s || /^0x[0-9a-f]{6,}$/i.test(s) || /^[0-9a-f]{12,}$/i.test(s) || !/[a-zà-ÿ]/i.test(s);
++  if (named && !technical(named)) return named;
++  const room = d ? roomOf(d) : null;
++  return room && !technical(room) ? room : t('commun.appareil');
++}
++
++/** Les clés de point dont la maison connaît le mot : celles qu'on montre
++ *  dans une feuille d'historique, jamais un libellé anglais de pilote. */
++const POINT_WORDS = {
++  temperature: 'maison.point.temperature',
++  temp_current: 'maison.point.temperature',
++  local_temperature: 'maison.point.local_temperature',
++  humidity: 'maison.point.humidity',
++  humidity_value: 'maison.point.humidity',
++  pressure: 'maison.point.pressure',
++  battery: 'maison.point.battery',
++  voltage: 'maison.point.voltage',
++  power: 'maison.point.power',
++  cur_power: 'maison.point.power',
++  power_appart: 'maison.point.power',
++  power_residuel: 'maison.point.power',
++  occupied_heating_setpoint: 'maison.point.occupied_heating_setpoint',
++  setpoint: 'maison.point.setpoint',
++};
++
++/** Le libellé d'un point en clair : le mot de la maison s'il existe, sinon
++ *  le libellé du pilote, sinon la clé (visible, donc trouvable). */
++export function pointLabel(spec, key) {
++  const word = POINT_WORDS[key ?? spec?.key];
++  if (word) return t(word);
++  return spec?.label || key || spec?.key || '';
++}
++
+ /** The point that switches the device on and off. */
+ export function powerKey(d) {
+   if (!d) return null;
+@@ -274,6 +342,15 @@
+   return null;
+ }
+ 
++/** The point `pinReading` reads, so the figure on the plan can open it. */
++export function pinReadingPoint(d, { drawn = false } = {}) {
++  const temp = readingPoint(d.id, ['temperature', 'temp_current']);
++  if (temp && deviceKind(d) !== 'climate' && !drawn && typeof value(d.id, temp) === 'number') return temp;
++  const p = readingPoint(d.id, ['power', 'cur_power']);
++  if (p && typeof value(d.id, p) === 'number') return p;
++  return null;
++}
++
+ /** A device id as the hub knows it: the plan may carry an older spelling
+  *  (a case drift after a rename), so the canonical key wins. */
+ export function canonicalId(id) {
+diff --git a/web/src/maison/pages/Dehors.svelte b/web/src/maison/pages/Dehors.svelte
+--- a/web/src/maison/pages/Dehors.svelte
++++ b/web/src/maison/pages/Dehors.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { home, value, num, isOn, reachable, device, powerKey } from '../lib/home.svelte.js';
++  import { home, value, num, isOn, reachable, device, powerKey, historyOf } from '../lib/home.svelte.js';
+   import { weatherOf } from '../lib/icons.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from '../ui/Icon.svelte';
+@@ -11,6 +11,7 @@
+   const air = $derived(out.air);
+   const pool = $derived(out.pool);
+   const v = (id, key) => value(id, key);
++  const histTitle = (k) => t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t(`maison.dehors.${k}`)}` });
+ 
+   const day = $derived(v(w, 'daylight') !== false);
+   const sky = $derived(weatherOf(v(w, 'weather_code'), day));
+@@ -68,15 +69,15 @@
+     <div class="now">
+       <svg class="sky-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={sky.icon} /></svg>
+       <div>
+-        <strong class="temp num">{num(v(w, 'temperature'), 0)}°</strong>
++        <button class="temp live num" onclick={() => historyOf(w, 'temperature')} title={t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t('commun.piece.temperature')}` })}>{num(v(w, 'temperature'), 0)}°</button>
+         <span class="label">{sky.label}</span>
+-        <span class="muted">{t('maison.dehors.ressenti', { feels: num(v(w, 'feels_like'), 0), max: num(v(w, 'today_max'), 0), min: num(v(w, 'today_min'), 0) })}</span>
++        <span class="muted">{t('maison.dehors.ressenti')} <button class="live num" onclick={() => historyOf(w, 'feels_like')} title={histTitle('ressenti')} aria-label={histTitle('ressenti')}>{num(v(w, 'feels_like'), 0)}°</button> · {t('maison.dehors.ressenti_ecart', { max: num(v(w, 'today_max'), 0), min: num(v(w, 'today_min'), 0) })}</span>
+       </div>
+     </div>
+     <div class="facts">
+-      <div><Icon name="humidity" size={20} /><small>{t('maison.dehors.humidite')}</small><b class="num">{num(v(w, 'humidity'))} %</b></div>
+-      <div><Icon name="wind" size={20} /><small>{t('maison.dehors.vent')}</small><b class="num">{num(v(w, 'wind_speed'))} km/h</b><em class="muted num">{t('maison.dehors.rafales', { speed: num(v(w, 'wind_gusts')) })}</em></div>
+-      <div><Icon name="water" size={20} /><small>{t('maison.dehors.pluie_jour')}</small><b class="num">{num(v(w, 'today_rain'), 1)} mm</b><em class="muted num">{t('maison.dehors.risque', { pct: num(v(w, 'today_rain_chance')) })}</em></div>
++      <div><Icon name="humidity" size={20} /><small>{t('maison.dehors.humidite')}</small><button class="live num" onclick={() => historyOf(w, 'humidity')} title={histTitle('humidite')} aria-label={histTitle('humidite')}>{num(v(w, 'humidity'))} %</button></div>
++      <div><Icon name="wind" size={20} /><small>{t('maison.dehors.vent')}</small><button class="live num" onclick={() => historyOf(w, 'wind_speed')} title={histTitle('vent')} aria-label={histTitle('vent')}>{num(v(w, 'wind_speed'))} km/h</button><em class="muted num">{t('maison.dehors.rafales')} <button class="live num" onclick={() => historyOf(w, 'wind_gusts')} title={histTitle('rafales')} aria-label={histTitle('rafales')}>{num(v(w, 'wind_gusts'))} km/h</button></em></div>
++      <div><Icon name="water" size={20} /><small>{t('maison.dehors.pluie_jour')}</small><button class="live num" onclick={() => historyOf(w, 'today_rain')} title={histTitle('pluie_jour')} aria-label={histTitle('pluie_jour')}>{num(v(w, 'today_rain'), 1)} mm</button><em class="muted num">{t('maison.dehors.risque', { pct: num(v(w, 'today_rain_chance')) })}</em></div>
+       <div><Icon name="sun-angle" size={20} /><small>{t('maison.dehors.soleil')}</small><b class="num">{hhmm(v(w, 'sunrise'))} → {hhmm(v(w, 'sunset'))}</b></div>
+     </div>
+     {#if sunPos != null}
+@@ -88,8 +89,8 @@
+     <section class="card">
+       <div class="card-head"><h2><Icon name="leaf" size={18} />{t('maison.dehors.air')}</h2><span class="chip {aqiTone}">{aqiWord}</span></div>
+       <div class="pairs">
+-        <div><small>{t('maison.dehors.indice')}</small><b class="num">{num(aqi)}</b></div>
+-        <div><small>UV</small><b class="num">{num(uv, 0)}</b><em class="muted">{uvWord}</em></div>
++        <div><small>{t('maison.dehors.indice')}</small>{#if v(air, 'aqi') != null}<button class="live num" onclick={() => historyOf(air, 'aqi')} title={histTitle('indice')} aria-label={histTitle('indice')}>{num(aqi)}</button>{:else}<b class="num">—</b>{/if}</div>
++        <div><small>UV</small>{#if v(air, 'uv_index') != null}<button class="live num" onclick={() => historyOf(air, 'uv_index')} title={t('maison.historique.ouvrir', { name: `${t('maison.dehors.air')} · UV` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.dehors.air')} · UV` })}>{num(uv, 0)}</button>{:else}<b class="num">—</b>{/if}<em class="muted">{uvWord}</em></div>
+         <div><small>{t('maison.dehors.particules')}</small><b class="num">{num(v(air, 'pm2_5'), 1)} µg/m³</b></div>
+         <div><small>{t('maison.dehors.ozone')}</small><b class="num">{num(v(air, 'ozone'))} µg/m³</b></div>
+       </div>
+@@ -102,9 +103,9 @@
+           {#if v(pool, 'action_required') === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
+         </div>
+         <div class="pairs">
+-          <div><small>{t('maison.dehors.eau')}</small><b class="num">{v(pool, 'temperature') != null ? `${num(v(pool, 'temperature'), 1)}°` : '—'}</b></div>
+-          <div><small>pH</small><b class="num">{num(ph, 1)}</b>{#if phWord}<em class="muted">{phWord}</em>{/if}</div>
+-          <div><small>{t('maison.dehors.chlore')}</small><b class="num">{orp != null ? `${num(orp)} mV` : '—'}</b>{#if orpWord}<em class="muted">{orpWord}</em>{/if}</div>
++          <div><small>{t('maison.dehors.eau')}</small>{#if v(pool, 'temperature') != null}<button class="live num" onclick={() => historyOf(pool, 'temperature')} title={histTitle('eau')} aria-label={histTitle('eau')}>{num(v(pool, 'temperature'), 1)}°</button>{:else}<b class="num">—</b>{/if}</div>
++          <div><small>pH</small>{#if ph != null}<button class="live num" onclick={() => historyOf(pool, 'ph')} title={histTitle('piscine')} aria-label={histTitle('piscine')}>{num(ph, 1)}</button>{:else}<b class="num">—</b>{/if}{#if phWord}<em class="muted">{phWord}</em>{/if}</div>
++          <div><small>{t('maison.dehors.chlore')}</small>{#if orp != null}<button class="live num" onclick={() => historyOf(pool, 'orp')} title={histTitle('chlore')} aria-label={histTitle('chlore')}>{num(orp)} mV</button>{:else}<b class="num">—</b>{/if}{#if orpWord}<em class="muted">{orpWord}</em>{/if}</div>
+           <div><small>{t('maison.dehors.filtration')}</small><b class="num">{v(pool, 'filtration') != null ? t('maison.dehors.heures_jour', { hours: num(v(pool, 'filtration')) }) : '—'}</b></div>
+         </div>
+         {#if v(pool, 'temperature') == null && ph == null}
+@@ -244,6 +245,40 @@
+     font-weight: 650;
+   }
+ 
++  /* Un relevé cliquable garde la taille et la graisse de sa valeur ; seul
++     son geste change (il ouvre l'historique, il ne commande rien). */
++  .live {
++    border: 0;
++    padding: 1px 6px;
++    margin: -1px -6px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 17px;
++    font-weight: 650;
++    text-align: left;
++    cursor: pointer;
++  }
++
++  .now .temp.live {
++    font-size: 64px;
++    font-weight: 250;
++    letter-spacing: -0.04em;
++    line-height: 0.95;
++  }
++
++  @media (hover: hover) {
++    .live:hover {
++      background: color-mix(in srgb, var(--ink) 7%, transparent);
++    }
++  }
++
++  .live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   em {
+     font-style: normal;
+     font-size: 13px;
+@@ -317,5 +352,9 @@
+     .temp {
+       font-size: 52px;
+     }
++
++    .now .temp.live {
++      font-size: 52px;
++    }
+   }
+ </style>
+diff --git a/web/src/maison/pages/Plan.svelte b/web/src/maison/pages/Plan.svelte
+--- a/web/src/maison/pages/Plan.svelte
++++ b/web/src/maison/pages/Plan.svelte
+@@ -1,7 +1,7 @@
+ <script>
+   import { onMount } from 'svelte';
+   import Icon from '../ui/Icon.svelte';
+-  import { hub, value, nameOf, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered, canonicalId, pinIcon, pinReading } from '../lib/home.svelte.js';
++  import { hub, value, nameOf, spokenNameOf, pointLabel, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered, canonicalId, pinIcon, pinReading, pinReadingPoint, historyOf } from '../lib/home.svelte.js';
+   import { asHuman, CANCELLED } from '../lib/auto.svelte.js';
+   import Drawing from '../plan/Drawing.svelte';
+   import House3D from '../plan/House3D.svelte';
+@@ -414,7 +414,14 @@
+   >
+     <Icon name={pinIcon(d)} size={18} />
+   </button>
+-  {#if pinReading(d, { drawn: !!floor?.size })}<span class="reading">{pinReading(d, { drawn: !!floor?.size })}</span>{/if}
++  {#if pinReading(d, { drawn: !!floor?.size })}
++    {@const readKey = pinReadingPoint(d, { drawn: !!floor?.size })}
++    {#if readKey}
++      <button class="reading live" onclick={(e) => { e.stopPropagation(); historyOf(d.id, readKey); }} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${pointLabel(null, readKey)}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${pointLabel(null, readKey)}` })}>{pinReading(d, { drawn: !!floor?.size })}</button>
++    {:else}
++      <span class="reading">{pinReading(d, { drawn: !!floor?.size })}</span>
++    {/if}
++  {/if}
+   <span class="name">{nameOf(d.id)}</span>
+   {#if editing}
+     <button class="unplace" onclick={(e) => { e.stopPropagation(); unplace(spot); }} aria-label={t('maison.plan.retirer_du_plan', { name: nameOf(d.id) })}><Icon name="close" size={12} /></button>
+@@ -955,6 +962,21 @@
+     box-shadow: var(--shadow);
+   }
+ 
++  /* Le relevé posé sur le plan ouvre son historique (le jeton, lui,
++     commande toujours l'appareil). */
++  button.reading.live {
++    border: 0;
++    font: inherit;
++    font-size: 11px;
++    font-weight: 700;
++    cursor: pointer;
++  }
++
++  button.reading.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .name {
+     max-width: 92px;
+     margin-top: 2px;
+diff --git a/web/src/maison/ui/BatteryGauge.svelte b/web/src/maison/ui/BatteryGauge.svelte
+--- a/web/src/maison/ui/BatteryGauge.svelte
++++ b/web/src/maison/ui/BatteryGauge.svelte
+@@ -3,12 +3,13 @@
+   // Moli n'a pas d'onduleur : la carte dit « — » et pourquoi. Aucune
+   // valeur inventée, aucune graduation trompeuse. Si la maison déclare un
+   // jour une source (`badges.gauge`), la carte la nomme au lieu de nier.
+-  import { home, value, nameOf } from '../lib/home.svelte.js';
++  import { home, value, nameOf, device, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   const source = $derived(home.config?.badges?.gauge ?? null);
+   const level = $derived(source ? value(source, 'level') : null);
++  const levelKey = $derived(source && device(source)?.points?.some((p) => p.key === 'level') ? 'level' : null);
+   const shown = $derived(typeof level === 'number' ? `${Math.round(level)} %` : '—');
+   const words = $derived(source ? t('maison.accueil.batterie_source', { source: nameOf(source) }) : t('maison.accueil.batterie_absente'));
+ </script>
+@@ -19,7 +20,11 @@
+     <b>{t('maison.accueil.batterie')}</b>
+     <small>{words}</small>
+   </span>
+-  <span class="value num">{shown}</span>
++  {#if source && levelKey}
++    <button class="value num live" onclick={() => historyOf(source, levelKey)} title={t('maison.historique.ouvrir', { name: `${t('maison.accueil.batterie')} · ${t('maison.historique.niveau')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.accueil.batterie')} · ${t('maison.historique.niveau')}` })}>{shown}</button>
++  {:else}
++    <span class="value num">{shown}</span>
++  {/if}
+ </section>
+ 
+ <style>
+@@ -67,4 +72,29 @@
+     font-weight: 750;
+     color: var(--ink-3);
+   }
++
++  .value.live {
++    border: 0;
++    padding: 2px 6px;
++    margin: -2px -6px;
++    border-radius: var(--r-sm);
++    background: none;
++    font: inherit;
++    font-size: 18px;
++    font-weight: 750;
++    color: var(--ink-3);
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .value.live:hover {
++      background: var(--surface-2);
++      color: var(--ink-2);
++    }
++  }
++
++  .value.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
+ </style>
+diff --git a/web/src/maison/ui/ClimateCard.svelte b/web/src/maison/ui/ClimateCard.svelte
+--- a/web/src/maison/ui/ClimateCard.svelte
++++ b/web/src/maison/ui/ClimateCard.svelte
+@@ -1,6 +1,6 @@
+ <script>
+   import { onMount } from 'svelte';
+-  import { device, value, reachable, num, act, setpointKey as setpointKeyOf } from '../lib/home.svelte.js';
++  import { device, value, reachable, num, act, setpointKey as setpointKeyOf, historyOfAny } from '../lib/home.svelte.js';
+   import { energy, useEnergy, watts, euros } from '../lib/energy-live.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+@@ -198,7 +198,13 @@
+         <strong class="num">{num(wanted, wanted % 1 ? 1 : 0)}<small>°</small></strong>
+         <span>{t('commun.clim.consigne')}</span>
+       {:else}
+-        <strong class="num">{num(temp, 0)}<small>°</small></strong>
++        <button
++          class="temp live"
++          onclick={() => historyOfAny(id, ['temperature', 'local_temperature'])}
++          onpointerdown={(e) => e.stopPropagation()}
++          title={t('maison.historique.ouvrir', { name: `${name} · ${t('commun.clim.temp_piece')}` })}
++          aria-label={t('maison.historique.ouvrir', { name: `${name} · ${t('commun.clim.temp_piece')}` })}
++        ><strong class="num">{num(temp, 0)}<small>°</small></strong></button>
+         {#if shownTarget != null}<span>{t('commun.clim.consigne_val', { temp: num(shownTarget, shownTarget % 1 ? 1 : 0) })}</span>{/if}
+       {/if}
+     </div>
+@@ -391,6 +397,30 @@
+     margin-top: 4px;
+   }
+ 
++  /* La température lue (pas la consigne) ouvre son historique. Le cercle
++     reste la commande : seul le chiffre change de geste. */
++  .reading .temp.live {
++    border: 0;
++    padding: 0 6px;
++    margin: 0 -6px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .reading .temp.live:hover {
++      background: color-mix(in srgb, var(--ink) 8%, transparent);
++    }
++  }
++
++  .reading .temp.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .facts {
+     display: grid;
+     gap: 8px;
+diff --git a/web/src/maison/ui/HistorySheet.svelte b/web/src/maison/ui/HistorySheet.svelte
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/ui/HistorySheet.svelte
+@@ -0,0 +1,357 @@
++<script>
++  // L'historique d'un relevé, ouvert depuis n'importe quel chiffre de la
++  // maison : la même source que l'Atelier (/api/history), mais dans la
++  // langue visuelle de la Maison — surfaces, arrondis, nuit comprise.
++  //
++  // Un nombre se lit comme une courbe (escalier, bande min/max des
++  // tranches) ; tout le reste (portes, modes, mots) comme la liste de ses
++  // derniers changements. Rien n'est inventé : une période sans relevé dit
++  // qu'elle est vide.
++  import { device, spokenNameOf, pointLabel } from '../lib/home.svelte.js';
++  import { seriesData, scaleFor, stepPath, bandPath, ticksFor, xTicksFor, statsFor } from '../../lib/history.js';
++  import { t, locale } from '../../lib/i18n.svelte.js';
++  import Icon from './Icon.svelte';
++
++  /** `point` : « id/clé » — le même identifiant que l'Atelier et l'API. */
++  let { point, onclose } = $props();
++
++  const RANGES = [6, 24, 168];
++  const RANGE_KEY = { 6: 'maison.historique.plage_6h', 24: 'maison.historique.plage_24h', 168: 'maison.historique.plage_7j' };
++
++  let hours = $state(24);
++  let series = $state(null);
++  let error = $state('');
++
++  const W = 560;
++  const H = 180;
++  const PAD = { l: 52, r: 18, t: 10, b: 24 };
++
++  const deviceId = $derived(point.slice(0, point.indexOf('/')));
++  const key = $derived(point.slice(point.indexOf('/') + 1));
++  const d = $derived(device(deviceId));
++  const spec = $derived(d?.points.find((p) => p.key === key));
++  // Les libellés des pilotes arrivent souvent en anglais (« Local temperature »,
++  // « Humidity ») : la maison a ses mots, on les préfère. Une clé inconnue
++  // retombe sur le libellé du pilote, jamais sur une clé i18n affichée.
++  const title = $derived(pointLabel(spec, key));
++  const owner = $derived(spokenNameOf(deviceId));
++
++  // Un nombre se résume en tranches (300 points suffisent) ; un état ne se
++  // résume pas : on demande les bascules brutes, sinon un point qui change
++  // souvent reviendrait bucketé et n'aurait plus de liste à montrer.
++  const numeric = $derived(spec?.kind?.type === 'numeric');
++  const perRange = $derived(numeric ? 300 : 5000);
++
++  $effect(() => {
++    const url = `/api/history?point=${encodeURIComponent(point)}&hours=${hours}&points=${perRange}`;
++    series = null;
++    error = '';
++    let live = true;
++    fetch(url)
++      .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(new Error(e.error)))))
++      .then((s) => {
++        if (live) series = s;
++      })
++      .catch((e) => {
++        if (live) error = e.message;
++      });
++    return () => {
++      live = false;
++    };
++  });
++
++  // Points à dessiner, échelle, escalier, bande : la géométrie partagée
++  // (`lib/history.js`), la même que l'Atelier — seule la peau change.
++  const data = $derived.by(() => seriesData(series));
++
++  const binary = $derived(spec?.kind?.type === 'binary');
++  // Un binaire ne se dessine pas en courbe : sa valeur ne change qu'à l'événement,
++  // et une marche 0/1 dit moins qu'une liste datée des bascules. Il rejoint donc
++  // les textuels dans la liste de changements. On ne regarde PAS `raw` : sur une
++  // longue plage le serveur résume en tranches, et la liste serait vide.
++  const listing = $derived(binary || spec?.kind?.type === 'string' || spec?.kind?.type === 'text');
++
++  const scale = $derived(scaleFor(series, data, PAD, { w: W, h: H }, binary));
++  const line = $derived(stepPath(scale, data, series?.to));
++  const band = $derived(bandPath(scale, data, !!series?.buckets?.length));
++  const ticks = $derived(ticksFor(scale, binary));
++  const stats = $derived(statsFor(data));
++
++  const nf = $derived(new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }));
++  const timeFmt = $derived(
++    new Intl.DateTimeFormat(locale(), hours > 24 ? { weekday: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }),
++  );
++  const fullFmt = $derived(new Intl.DateTimeFormat(locale(), { dateStyle: 'short', timeStyle: 'short' }));
++  const xTicks = $derived(xTicksFor(series));
++
++  const unit = $derived(spec?.unit ? ` ${spec.unit}` : '');
++  const shownNumber = (v) => (binary ? (v ? t('maison.historique.oui') : t('maison.historique.non')) : `${nf.format(v)}${unit}`);
++  const shownChange = (v) => {
++    if (binary) {
++      const on = typeof v === 'boolean' ? v : Number(v) !== 0;
++      return on ? t('maison.historique.oui') : t('maison.historique.non');
++    }
++    return v === true ? t('maison.historique.oui') : v === false ? t('maison.historique.non') : typeof v === 'number' ? `${nf.format(v)}${unit}` : String(v);
++  };
++  const changes = $derived(listing ? [...(series.raw ?? [])].reverse().slice(0, 30) : []);
++
++  // La feuille prend le clavier : elle s'ouvre sur sa plage active et Tab y
++  // tourne en rond, sinon le focus filerait derrière le fond opaque.
++  let panel = $state(null);
++
++  const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
++  const focusables = () => [...(panel?.querySelectorAll(FOCUSABLE) ?? [])].filter((el) => !el.disabled);
++
++  $effect(() => {
++    focusables().find((el) => el.classList.contains('active'))?.focus();
++  });
++
++  function onkey(e) {
++    if (e.key === 'Escape') {
++      onclose();
++      return;
++    }
++    if (e.key !== 'Tab') return;
++    const list = focusables();
++    if (!list.length) return;
++    const first = list[0];
++    const last = list.at(-1);
++    if (e.shiftKey && document.activeElement === first) {
++      e.preventDefault();
++      last.focus();
++    } else if (!e.shiftKey && document.activeElement === last) {
++      e.preventDefault();
++      first.focus();
++    }
++  }
++</script>
++
++<svelte:window onkeydown={onkey} />
++
++<div class="backdrop" onclick={onclose} role="presentation"></div>
++<div class="panel" bind:this={panel} role="dialog" aria-modal="true" tabindex="-1" aria-label={t('maison.historique.aria', { name: owner })}>
++  <header>
++    <div class="who">
++      <h3>{title}</h3>
++      <p>{owner}</p>
++    </div>
++    <div class="ranges">
++      {#each RANGES as h (h)}
++        <button class:active={hours === h} onclick={() => (hours = h)}>{t(RANGE_KEY[h])}</button>
++      {/each}
++      <button class="close" onclick={onclose} aria-label={t('commun.fermer')}><Icon name="close" size={20} /></button>
++    </div>
++  </header>
++
++  {#if error}
++    <p class="empty">{t('maison.historique.indisponible')}</p>
++  {:else if !series}
++    <p class="empty">{t('maison.historique.chargement')}</p>
++  {:else if listing}
++    {#if changes.length}
++      <ol class="changes">
++        {#each changes as [ts, v], i (i)}
++          <li><time class="num">{fullFmt.format(ts)}</time><b>{shownChange(v)}</b></li>
++        {/each}
++      </ol>
++    {:else}
++      <p class="empty">{t('maison.historique.vide')}</p>
++    {/if}
++  {:else if !data.length}
++    <p class="empty">{t('maison.historique.vide')}</p>
++  {:else}
++    <svg viewBox="0 0 {W} {H}" role="img" aria-label={t('maison.historique.courbe', { name: title })}>
++      {#each ticks as tick (tick)}
++        <line x1={PAD.l} x2={W - PAD.r} y1={scale.y(tick)} y2={scale.y(tick)} class="grid" />
++        <text x={PAD.l - 6} y={scale.y(tick) + 4} text-anchor="end" class="axis num">{shownNumber(tick)}</text>
++      {/each}
++      {#each xTicks as tick, i (tick)}
++        <text
++          x={scale.x(tick)}
++          y={H - 6}
++          text-anchor={i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle'}
++          class="axis num">{timeFmt.format(tick)}</text>
++      {/each}
++      {#if band}<path d={band} class="band" />{/if}
++      <path d={line} class="line" />
++    </svg>
++    {#if stats}
++      <div class="stats">
++        <span><small>{t('maison.historique.maintenant')}</small><b class="num">{shownNumber(stats.last)}</b></span>
++        <span><small>{t('maison.historique.min')}</small><b class="num">{shownNumber(stats.min)}</b></span>
++        <span><small>{t('maison.historique.max')}</small><b class="num">{shownNumber(stats.max)}</b></span>
++      </div>
++    {/if}
++    <p class="meta num">
++      {t('maison.historique.changements', { count: series.total })}{#if series.buckets?.length}{' · '}{t('maison.historique.moyenne')}{/if}
++    </p>
++  {/if}
++</div>
++
++<style>
++  .backdrop {
++    position: fixed;
++    inset: 0;
++    background: color-mix(in srgb, var(--ink) 35%, transparent);
++    z-index: 30;
++  }
++
++  .panel {
++    position: fixed;
++    z-index: 31;
++    left: 50%;
++    top: 50%;
++    transform: translate(-50%, -50%);
++    width: min(640px, calc(100vw - 24px));
++    max-height: calc(100dvh - 24px);
++    overflow: auto;
++    display: grid;
++    gap: 12px;
++    padding: 18px 20px 20px;
++    border-radius: var(--r-lg);
++    background: var(--surface);
++    color: var(--ink);
++    box-shadow: var(--shadow-lift);
++  }
++
++  header {
++    display: flex;
++    align-items: flex-start;
++    justify-content: space-between;
++    gap: 12px;
++    flex-wrap: wrap;
++  }
++
++  .who {
++    display: grid;
++    gap: 2px;
++    min-width: 0;
++  }
++
++  h3 {
++    font-size: 17px;
++    font-weight: 700;
++  }
++
++  .who p {
++    color: var(--ink-3);
++    font-size: 13px;
++    font-weight: 650;
++  }
++
++  .ranges {
++    display: flex;
++    align-items: center;
++    gap: 6px;
++    flex-wrap: wrap;
++  }
++
++  .ranges button {
++    border: 0;
++    border-radius: 999px;
++    padding: 6px 12px;
++    background: var(--surface-2);
++    color: var(--ink-3);
++    font-size: 13px;
++    font-weight: 650;
++  }
++
++  .ranges button.active {
++    background: var(--warm-soft);
++    color: var(--warm-ink);
++  }
++
++  .ranges .close {
++    display: grid;
++    place-items: center;
++    width: 34px;
++    height: 34px;
++    padding: 0;
++    background: none;
++    color: var(--ink-3);
++  }
++
++  svg {
++    width: 100%;
++    height: auto;
++    display: block;
++  }
++
++  .grid {
++    stroke: var(--line);
++    stroke-width: 1;
++  }
++
++  .axis {
++    fill: var(--ink-3);
++    font-size: 10px;
++  }
++
++  .line {
++    fill: none;
++    stroke: var(--cool);
++    stroke-width: 2;
++    stroke-linejoin: round;
++  }
++
++  .band {
++    fill: color-mix(in srgb, var(--cool) 16%, transparent);
++    stroke: none;
++  }
++
++  .stats {
++    display: grid;
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 8px;
++  }
++
++  .stats span {
++    display: grid;
++    gap: 2px;
++    padding: 8px 10px;
++    border-radius: var(--r-sm);
++    background: var(--surface-2);
++  }
++
++  .stats small {
++    font-size: 11px;
++    font-weight: 650;
++    color: var(--ink-3);
++  }
++
++  .stats b {
++    font-size: 15px;
++    font-weight: 700;
++  }
++
++  .meta,
++  .empty {
++    color: var(--ink-3);
++    font-size: 13px;
++  }
++
++  .changes {
++    list-style: none;
++    margin: 0;
++    padding: 0;
++    display: grid;
++    gap: 6px;
++    font-size: 14px;
++  }
++
++  .changes li {
++    display: flex;
++    justify-content: space-between;
++    gap: 12px;
++  }
++
++  .changes time {
++    color: var(--ink-3);
++  }
++
++  @media (max-width: 520px) {
++    .panel {
++      padding: 14px 14px 16px;
++    }
++  }
++</style>
+diff --git a/web/src/maison/ui/PlanOverlay.svelte b/web/src/maison/ui/PlanOverlay.svelte
+--- a/web/src/maison/ui/PlanOverlay.svelte
++++ b/web/src/maison/ui/PlanOverlay.svelte
+@@ -3,7 +3,7 @@
+   // « picture-elements » de Home Assistant). L’image vient de /api/plan/
+   // images (nom = empreinte du contenu) ; chaque point est placé en
+   // pourcentage (top/left), lu en direct depuis l’appareil.
+-  import { home, value, num } from '../lib/home.svelte.js';
++  import { home, value, num, nameOf, spokenNameOf, pointLabel, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+ 
+   const cfg = $derived(home.config?.plan_overlay ?? null);
+@@ -28,9 +28,15 @@
+     <div class="frame">
+       <img src="/api/plan/images/{cfg.image}" alt="" loading="lazy" />
+       {#each elems as e (e.id + (e.key ?? ''))}
+-        <span class="label {tone(e)}" style="top:{e.top}%; left:{e.left}%" title={e.name ?? e.id}>
+-          {shown(e)}
+-        </span>
++        {#if typeof value(e.id, e.key ?? 'temperature') === 'number'}
++          <button class="label {tone(e)} live" style="top:{e.top}%; left:{e.left}%" title={t('maison.historique.ouvrir', { name: e.name ?? `${spokenNameOf(e.id)} · ${pointLabel(null, e.key ?? 'temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: e.name ?? `${spokenNameOf(e.id)} · ${pointLabel(null, e.key ?? 'temperature')}` })} onclick={() => historyOf(e.id, e.key ?? 'temperature')}>
++            {shown(e)}
++          </button>
++        {:else}
++          <span class="label {tone(e)}" style="top:{e.top}%; left:{e.left}%" title={e.name ?? e.id}>
++            {shown(e)}
++          </span>
++        {/if}
+       {/each}
+     </div>
+   </section>
+@@ -79,4 +85,19 @@
+   .label.hot {
+     color: #e5482b;
+   }
++
++  /* Sur le plan : le jeton est déjà une pastille, il devient un bouton. */
++  button.label.live {
++    border: 0;
++    font: inherit;
++    font-size: 12px;
++    font-weight: 750;
++    line-height: 1.4;
++    cursor: pointer;
++  }
++
++  button.label.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
+ </style>
+diff --git a/web/src/maison/ui/PoolCard.svelte b/web/src/maison/ui/PoolCard.svelte
+--- a/web/src/maison/ui/PoolCard.svelte
++++ b/web/src/maison/ui/PoolCard.svelte
+@@ -1,7 +1,7 @@
+ <script>
+   // La piscine, en une carte de 62 px : la température de l'eau, la pompe,
+   // et le coup d'œil quand la sonde le demande. Un tap ouvre Dehors.
+-  import { home, value, num, isOn, reachable, device, powerKey } from '../lib/home.svelte.js';
++  import { home, value, num, isOn, reachable, device, powerKey, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+@@ -11,19 +11,25 @@
+   const look = $derived(pool ? value(pool, 'action_required') : null);
+   const pumpId = $derived(out.pool_pump ?? null);
+   const pumpKnown = $derived(!!(pumpId && reachable(pumpId) && powerKey(device(pumpId))));
++  const tempLabel = $derived(t('maison.historique.ouvrir', { name: `${t('maison.accueil.piscine_titre')} · ${t('maison.dehors.eau')}` }));
+ </script>
+ 
+-<a class="card pool" href="#/dehors" aria-label={t('maison.accueil.piscine_ouvrir')}>
++<div class="card pool">
++  <a class="open" href="#/dehors" aria-label={t('maison.accueil.piscine_ouvrir')}></a>
+   <span class="ico"><Icon name="pool" size={19} /></span>
+   <span class="words">
+     <b>{t('maison.accueil.piscine_titre')}</b>
+     <small>{pumpKnown ? (isOn(pumpId) ? t('maison.accueil.piscine_marche') : t('maison.accueil.piscine_arret')) : '—'}</small>
+   </span>
+   <span class="facts">
+-    <b class="num">{temp != null ? `${num(temp, 1)}°` : '—'}</b>
++    {#if pool && temp != null}
++      <button class="temp num" onclick={() => historyOf(pool, 'temperature')} title={tempLabel} aria-label={tempLabel}>{num(temp, 1)}°</button>
++    {:else}
++      <b class="num">—</b>
++    {/if}
+     {#if look === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else if look === false}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
+   </span>
+-</a>
++</div>
+ 
+ <style>
+   .pool {
+@@ -64,13 +70,48 @@
+     color: var(--ink-3);
+   }
+ 
++  /* Au-dessus du lien de carte : sinon la surface `.open` intercepterait
++     le tap sur la température et renverrait vers Dehors. */
+   .facts {
++    position: relative;
++    z-index: 1;
+     display: inline-flex;
+     align-items: center;
+     gap: 8px;
+     flex: none;
+   }
+ 
++  /* Le lien de la carte : toute la surface, sous le relevé. */
++  .open {
++    position: absolute;
++    inset: 0;
++    border-radius: inherit;
++  }
++
++  .facts .temp {
++    border: 0;
++    padding: 2px 6px;
++    margin: -2px -6px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 18px;
++    font-weight: 750;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .facts .temp:hover {
++      background: var(--surface-2);
++    }
++  }
++
++  .facts .temp:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .facts b {
+     font-size: 18px;
+     font-weight: 750;
+diff --git a/web/src/maison/ui/PrinterCard.svelte b/web/src/maison/ui/PrinterCard.svelte
+--- a/web/src/maison/ui/PrinterCard.svelte
++++ b/web/src/maison/ui/PrinterCard.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { hub, device, value, reachable, nameOf, act, num, clock, home } from '../lib/home.svelte.js';
++  import { hub, device, value, reachable, nameOf, act, num, clock, home, historyOf } from '../lib/home.svelte.js';
+   import { phase, PHASES, jobName, duration, cancelWord } from '../lib/printers.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+@@ -11,6 +11,7 @@
+ 
+   const d = $derived(device(id));
+   const v = (k) => value(id, k);
++  const histTitle = (k) => t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t(`salon.impression.${k}`)}` });
+   const ok = $derived(reachable(id));
+   const state = $derived(ok ? phase(v('state')) : 'off');
+   const look = $derived(state === 'off' ? { label: t('salon.eteinte'), tone: '' } : PHASES[state]);
+@@ -117,12 +118,12 @@
+   </div>
+ 
+   <div class="temps">
+-    <span><small>{t('salon.impression.buse')}</small><b class="num">{temp(v('nozzle_temperature'))}</b>{#if v('nozzle_target')}<small class="num"> → {temp(v('nozzle_target'))}</small>{/if}</span>
++    <span><small>{t('salon.impression.buse')}</small>{#if typeof v('nozzle_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'nozzle_temperature')} title={histTitle('buse')} aria-label={histTitle('buse')}>{temp(v('nozzle_temperature'))}</button>{:else}<b class="num">{temp(v('nozzle_temperature'))}</b>{/if}{#if v('nozzle_target')}<small class="num"> → {temp(v('nozzle_target'))}</small>{/if}</span>
+     {#if d?.points.some((p) => p.key === 'bed_temperature')}
+-      <span><small>{t('salon.impression.plateau')}</small><b class="num">{temp(v('bed_temperature'))}</b>{#if v('bed_target')}<small class="num"> → {temp(v('bed_target'))}</small>{/if}</span>
++      <span><small>{t('salon.impression.plateau')}</small>{#if typeof v('bed_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'bed_temperature')} title={histTitle('plateau')} aria-label={histTitle('plateau')}>{temp(v('bed_temperature'))}</button>{:else}<b class="num">{temp(v('bed_temperature'))}</b>{/if}{#if v('bed_target')}<small class="num"> → {temp(v('bed_target'))}</small>{/if}</span>
+     {/if}
+     {#if d?.points.some((p) => p.key === 'chamber_temperature')}
+-      <span><small>{t('salon.impression.enceinte')}</small><b class="num">{temp(v('chamber_temperature'))}</b></span>
++      <span><small>{t('salon.impression.enceinte')}</small>{#if typeof v('chamber_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'chamber_temperature')} title={histTitle('enceinte')} aria-label={histTitle('enceinte')}>{temp(v('chamber_temperature'))}</button>{:else}<b class="num">{temp(v('chamber_temperature'))}</b>{/if}</span>
+     {/if}
+   </div>
+ 
+@@ -335,6 +336,31 @@
+     font-weight: 650;
+   }
+ 
++  /* La température lue par la tête ou le plateau ouvre son historique. */
++  .temps .live {
++    border: 0;
++    padding: 1px 5px;
++    margin: -1px -5px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 16px;
++    font-weight: 650;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .temps .live:hover {
++      background: var(--surface-2);
++    }
++  }
++
++  .temps .live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .tools {
+     list-style: none;
+     margin: 0;
+diff --git a/web/src/maison/ui/RoomCard.svelte b/web/src/maison/ui/RoomCard.svelte
+--- a/web/src/maison/ui/RoomCard.svelte
++++ b/web/src/maison/ui/RoomCard.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf, tempIgnored } from '../lib/home.svelte.js';
++  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, spokenNameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf, tempIgnored, historyOf, readingPoint } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+   import LightTile from './LightTile.svelte';
+@@ -22,8 +22,9 @@
+     // An appliance that is no button: what it draws, nothing when unplugged.
+     if (quiet(d.id)) {
+       if (d.online === false) return every ? [{ tone: '', icon: 'alert', text: t('commun.piece.hors_ligne', { name: nameOf(d.id) }) }] : [];
+-      const w = value(d.id, 'cur_power') ?? value(d.id, 'power');
+-      if (typeof w === 'number' && w >= 3) return [{ tone: 'warm', icon: 'power', text: t('commun.piece.consomme', { name: nameOf(d.id), watts: num(w) }) }];
++      const wKey = readingPoint(d.id, ['cur_power', 'power']);
++      const w = wKey ? value(d.id, wKey) : null;
++      if (typeof w === 'number' && w >= 3) return [{ tone: 'warm', icon: 'power', text: t('commun.piece.consomme', { name: nameOf(d.id), watts: num(w) }), point: wKey ? `${d.id}/${wKey}` : null }];
+       return every ? [{ tone: '', icon: 'power', text: t('commun.piece.au_repos', { name: nameOf(d.id) }) }] : [];
+     }
+     // A silent sensor's last readings are old news: say it is silent.
+@@ -39,10 +40,12 @@
+     if (open === true) out.push({ tone: 'warm', icon: 'door-open', text: t('commun.piece.ouverte', { name: nameOf(d.id) }) });
+     else if (open === false) out.push({ tone: '', icon: 'door-closed', text: t('commun.piece.fermee', { name: nameOf(d.id) }) });
+     // The temperature is the room's, in the head.
+-    const hum = v('humidity') ?? v('humidity_value');
+-    if (typeof hum === 'number') out.push({ tone: '', icon: 'humidity', text: t('commun.pourcent', { n: num(hum) }) });
+-    const co2 = v('co2_value') ?? v('co2');
+-    if (typeof co2 === 'number') out.push({ tone: co2 > 1200 ? 'warm' : '', icon: 'leaf', text: `CO₂ ${num(co2)} ppm` });
++    const humKey = readingPoint(d.id, ['humidity', 'humidity_value']);
++    const hum = humKey ? v(humKey) : null;
++    if (typeof hum === 'number') out.push({ tone: '', icon: 'humidity', text: t('commun.pourcent', { n: num(hum) }), point: `${d.id}/${humKey}` });
++    const co2Key = readingPoint(d.id, ['co2_value', 'co2']);
++    const co2 = co2Key ? v(co2Key) : null;
++    if (typeof co2 === 'number') out.push({ tone: co2 > 1200 ? 'warm' : '', icon: 'leaf', text: `CO₂ ${num(co2)} ppm`, point: `${d.id}/${co2Key}` });
+     if (motion(d.id)) out.push({ tone: 'warm', icon: 'motion', text: t('commun.piece.presence') });
+     if (lowBattery(d.id)) out.push({ tone: 'alert', icon: 'alert', text: t('commun.piece.pile_faible', { name: nameOf(d.id) }) });
+     if (deviceKind(d) === 'camera') out.push({ tone: 'cool', icon: 'cctv', text: nameOf(d.id), href: '#/cameras' });
+@@ -75,6 +78,21 @@
+       .filter((x) => typeof x === 'number');
+     return readings.length ? readings.reduce((a, b) => a + b, 0) / readings.length : null;
+   });
++
++  /** Le capteur dont la température de la pièce vient : c'est son
++   *  historique qu'ouvre le chiffre de l'en-tête. Quand plusieurs capteurs
++   *  se moyennent, l'en-tête dit une moyenne qu'aucune courbe ne porte :
++   *  le chiffre reste alors une simple lecture, pas un bouton. */
++  const tempSource = $derived.by(() => {
++    const skip = tempIgnored(room.name);
++    const sources = [];
++    for (const d of [...room.sensors, ...room.climates]) {
++      if (d.online === false || skip.has(d.id)) continue;
++      const key = readingPoint(d.id, ['temperature', 'temp_current']);
++      if (key && typeof value(d.id, key) === 'number') sources.push({ id: d.id, key });
++    }
++    return sources.length === 1 ? sources[0] : null;
++  });
+   const tone = (deg) => (deg < 18 ? 'cold' : deg < 20 ? 'cool' : deg <= 24 ? 'good' : deg <= 27 ? 'warm' : 'hot');
+   const gaugeAt = (deg) => Math.min(100, Math.max(0, ((deg - 14) / 16) * 100));
+ 
+@@ -180,7 +198,11 @@
+       <span class="muted">{room.lit ? t('commun.piece.allumees', { count: room.lit }) : t('commun.piece.tout_eteint')}</span>
+     </div>
+     {#if temp != null}
+-      <span class="temp {tone(temp)}" title={t('commun.piece.temperature')}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></span>
++      {#if tempSource}
++        <button class="temp {tone(temp)} live" onclick={() => historyOf(tempSource.id, tempSource.key)} title={t('maison.historique.ouvrir', { name: `${room.name} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${room.name} · ${t('commun.piece.temperature')}` })}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></button>
++      {:else}
++        <span class="temp {tone(temp)}" title={t('commun.piece.temperature')}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></span>
++      {/if}
+     {/if}
+     {#if lamps.length}
+       <button class="round" class:open={showLooks} onclick={() => (showLooks = !showLooks)} aria-expanded={showLooks} title={t('commun.piece.ambiances')} aria-label={t('commun.piece.ambiances_de', { name: room.name })}>
+@@ -234,12 +256,20 @@
+ 
+   {#each room.climates as d (d.id)}
+     {@const on = isOn(d.id)}
+-    <button class="clim" class:on onclick={() => (openClim = openClim === d.id ? null : d.id)} aria-expanded={openClim === d.id}>
+-      <Icon name="air-conditioner" size={18} />
+-      <b>{nameOf(d.id)}</b>
+-      <span class="num">{num(value(d.id, 'temperature'), 0)}° → {num(value(d.id, 'target_temperature'), 1)}°</span>
+-      <span class="state">{on ? (MODES[value(d.id, 'mode')] ? t(MODES[value(d.id, 'mode')]) : t('commun.piece.en_marche')) : t('commun.piece.eteinte')}</span>
+-    </button>
++    {@const climTempKey = readingPoint(d.id, ['temperature', 'local_temperature'])}
++    <div class="clim" class:on>
++      <button class="clim-main" onclick={() => (openClim = openClim === d.id ? null : d.id)} aria-expanded={openClim === d.id} aria-label={t('commun.piece.regler_nom', { name: nameOf(d.id) })}>
++        <Icon name="air-conditioner" size={18} />
++        <b>{nameOf(d.id)}</b>
++        <span class="state">{on ? (MODES[value(d.id, 'mode')] ? t(MODES[value(d.id, 'mode')]) : t('commun.piece.en_marche')) : t('commun.piece.eteinte')}</span>
++      </button>
++      {#if climTempKey}
++        <button class="clim-temp num live" onclick={() => historyOf(d.id, climTempKey)} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${t('commun.clim.temp_piece')}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${t('commun.clim.temp_piece')}` })}>{num(value(d.id, climTempKey), 0)}°</button>
++      {:else}
++        <span class="clim-temp num">—</span>
++      {/if}
++      <span class="clim-target num">→ {num(value(d.id, 'target_temperature'), 1)}°</span>
++    </div>
+     {#if openClim === d.id}
+       <ClimateCard id={d.id} name={nameOf(d.id)} />
+     {/if}
+@@ -250,6 +280,9 @@
+       {#each sensorChips as c, i (i)}
+         {#if c.href}
+           <a class="chip {c.tone}" href={c.href}><Icon name={c.icon} size={15} />{c.text}</a>
++        {:else if c.point}
++          {@const cut = c.point.indexOf('/')}
++          <button class="chip {c.tone} live" onclick={() => historyOf(c.point.slice(0, cut), c.point.slice(cut + 1))} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(c.point.slice(0, cut))} · ${c.text}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(c.point.slice(0, cut))} · ${c.text}` })}><Icon name={c.icon} size={15} />{c.text}</button>
+         {:else}
+           <span class="chip {c.tone}"><Icon name={c.icon} size={15} />{c.text}</span>
+         {/if}
+@@ -324,6 +357,25 @@
+     font-size: 13px;
+   }
+ 
++  /* La température de la pièce ouvre le capteur dont elle vient. */
++  .temp.live {
++    border: 0;
++    font: inherit;
++    font-size: 13px;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .temp.live:hover {
++      background: var(--surface-3);
++    }
++  }
++
++  .temp.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .temp b {
+     font-weight: 700;
+   }
+@@ -540,22 +592,78 @@
+     align-items: center;
+     gap: 10px;
+     width: 100%;
+-    padding: 10px 14px;
+-    border: none;
++    padding: 4px 6px 4px 8px;
+     border-radius: var(--r-md);
+     background: var(--surface-2);
+     color: var(--ink);
+     font: inherit;
+     font-size: 14px;
++  }
++
++  /* La ligne clim : la commande (nom, mode) et le relevé qui ouvre son
++     historique ne partagent plus le même bouton. */
++  .clim-main {
++    display: flex;
++    align-items: center;
++    gap: 10px;
++    flex: 1 1 auto;
++    min-width: 0;
++    padding: 6px 6px;
++    border: none;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 14px;
+     text-align: left;
+     cursor: pointer;
+   }
+ 
++  @media (hover: hover) {
++    .clim-main:hover {
++      background: var(--surface-3);
++    }
++  }
++
+   .clim b {
+     flex: 1;
+     font-weight: 650;
+   }
+ 
++  .clim .clim-temp {
++    flex: none;
++    font-size: 14px;
++    font-weight: 700;
++  }
++
++  .clim .clim-temp.live {
++    border: 0;
++    padding: 4px 6px;
++    border-radius: var(--r-sm);
++    background: none;
++    font: inherit;
++    font-size: 14px;
++    font-weight: 700;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .clim .clim-temp.live:hover {
++      background: var(--surface-3);
++    }
++  }
++
++  .clim .clim-temp.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
++  .clim .clim-target {
++    flex: none;
++    font-size: 14px;
++    color: var(--ink-3);
++  }
++
+   .clim .state {
+     font-size: 12.5px;
+     font-weight: 600;
+@@ -575,4 +683,24 @@
+   .chips a {
+     text-decoration: none;
+   }
++
++  /* Un relevé chiffré : la pastille ouvre son historique, elle ne commande
++     rien. Le curseur ne s'affiche qu'au survol capable de le montrer. */
++  .chips .chip.live {
++    border: 0;
++    font: inherit;
++    font-size: inherit;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .chips .chip.live:hover {
++      background: var(--surface-3);
++    }
++  }
++
++  .chips .chip.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
+ </style>
+diff --git a/web/src/maison/ui/SensorCard.svelte b/web/src/maison/ui/SensorCard.svelte
+--- a/web/src/maison/ui/SensorCard.svelte
++++ b/web/src/maison/ui/SensorCard.svelte
+@@ -1,5 +1,5 @@
+ <script>
+-  import { device, nameOf, reachable, since, relative, home, num } from '../lib/home.svelte.js';
++  import { device, nameOf, reachable, since, relative, home, num, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+@@ -50,7 +50,10 @@
+   {#if rows.length}
+     <dl>
+       {#each rows as r (r.p.key)}
+-        <div><dt>{r.p.label || r.p.key}</dt><dd class="num">{r.text}</dd></div>
++        <div>
++          <dt>{r.p.label || r.p.key}</dt>
++          <dd class="num"><button class="live" onclick={() => historyOf(id, r.p.key)} title={t('maison.historique.ouvrir', { name: `${nameOf(id, name)} · ${r.p.label || r.p.key}` })} aria-label={t('maison.historique.ouvrir', { name: `${nameOf(id, name)} · ${r.p.label || r.p.key}` })}>{r.text}</button></dd>
++        </div>
+       {/each}
+     </dl>
+   {:else}
+@@ -85,4 +88,29 @@
+     font-size: 18px;
+     font-weight: 650;
+   }
++
++  dd .live {
++    border: 0;
++    padding: 1px 5px;
++    margin: -1px -5px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 18px;
++    font-weight: 650;
++    text-align: left;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    dd .live:hover {
++      background: var(--surface-2);
++    }
++  }
++
++  dd .live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
+ </style>
+diff --git a/web/src/maison/ui/SkyHero.svelte b/web/src/maison/ui/SkyHero.svelte
+--- a/web/src/maison/ui/SkyHero.svelte
++++ b/web/src/maison/ui/SkyHero.svelte
+@@ -6,7 +6,7 @@
+   // one). A tap opens the detail: the next day on the map, the hours and the
+   // days to come.
+   import { onMount } from 'svelte';
+-  import { home, value, clock, num, longDate } from '../lib/home.svelte.js';
++  import { home, value, clock, num, longDate, historyOf } from '../lib/home.svelte.js';
+   import { sky, watchSky, hours, outlook, localTs } from '../lib/sky.svelte.js';
+   import { weatherOf } from '../lib/icons.js';
+   import { t } from '../../lib/i18n.svelte.js';
+@@ -57,7 +57,11 @@
+   {/if}
+ 
+   {#if w}
+-    <button class="sky" class:live={sky.map} onclick={() => (open = true)} aria-label={t('maison.meteo.ouvrir', { label: now.label })}>
++    <!-- Le ciel entier ouvre le détail ; la température, elle, ouvre son
++         historique. Deux boutons qui ne s'imbriquent pas : le second est
++         posé au-dessus du premier. -->
++    <div class="sky" class:live={sky.map}>
++      <button class="open" onclick={() => (open = true)} aria-label={t('maison.meteo.ouvrir', { label: now.label })}></button>
+       {#if sky.map}
+         <span class="space" aria-hidden="true">
+           <WeatherMap map={sky.map} {hour} tx={narrow ? 0.17 : 0.34} ty={0.5} />
+@@ -66,7 +70,7 @@
+       <span class="now">
+         <Icon path={now.icon} size={44} />
+         <span class="words">
+-          <strong class="num">{num(value(w, 'temperature'), 0)}°</strong>
++          <button class="temp num" onclick={() => historyOf(w, 'temperature')} title={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })}>{num(value(w, 'temperature'), 0)}°</button>
+           <span class="label">{now.label}</span>
+           <span class="small num"
+             >↑ {num(value(w, 'today_max'), 0)}° ↓ {num(value(w, 'today_min'), 0)}° ·
+@@ -76,7 +80,7 @@
+           {#if line}<span class="small outlook">{line}</span>{/if}
+         </span>
+       </span>
+-    </button>
++    </div>
+   {/if}
+ </section>
+ 
+@@ -152,6 +156,54 @@
+     border-radius: var(--r-lg);
+   }
+ 
++  /* Le ciel : une cible qui couvre toute la zone, sous la température. */
++  .sky .open {
++    position: absolute;
++    inset: 0;
++    z-index: 0;
++    border: 0;
++    padding: 0;
++    border-radius: var(--r-lg);
++    background: none;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .sky .open:hover {
++      background: color-mix(in srgb, var(--surface) 45%, transparent);
++    }
++  }
++
++  /* La température : au-dessus de la cible du ciel, pour ouvrir son
++     historique plutôt que le détail météo. */
++  .words .temp {
++    justify-self: start;
++    border: 0;
++    padding: 0 4px;
++    margin: 0 -4px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 46px;
++    font-weight: 300;
++    letter-spacing: -0.03em;
++    line-height: 1;
++    cursor: pointer;
++    pointer-events: auto;
++  }
++
++  @media (hover: hover) {
++    .words .temp:hover {
++      background: color-mix(in srgb, var(--ink) 8%, transparent);
++    }
++  }
++
++  .words .temp:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   /* The map: right half, melting into the page on the left, top and
+      bottom (no frame). */
+   .space {
+@@ -178,6 +230,9 @@
+     align-items: center;
+     gap: 12px;
+     color: var(--sun);
++    position: relative;
++    z-index: 1;
++    pointer-events: none;
+   }
+ 
+   .words {
+diff --git a/web/src/maison/ui/TabletteRow.svelte b/web/src/maison/ui/TabletteRow.svelte
+--- a/web/src/maison/ui/TabletteRow.svelte
++++ b/web/src/maison/ui/TabletteRow.svelte
+@@ -3,14 +3,15 @@
+   // lectures en pastilles (température, humidité, vitesse, consommation).
+   // C'est l'équivalent Moli des « bubble card » de la tablette Home
+   // Assistant : 56 px de haut, tout tient sur une ligne, un tap commande.
+-  import { device, isOn, pending, reachable, toggle, value, nameOf } from '../lib/home.svelte.js';
++  import { device, isOn, pending, reachable, toggle, value, nameOf, spokenNameOf, pointLabel, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+-  /** `subs` : pastilles de lecture, `{ icon, text, tone, dot, label }` — `dot`
+-   *  ajoute une pastille de couleur après le texte (l'état d'une vanne),
+-   *  `label` nomme la pastille pour les lecteurs d'écran. `level` : la
+-   *  grandeur montrée en pourcentage quand la commande est allumée. */
++  /** `subs` : pastilles de lecture, `{ icon, text, tone, dot, label, point }` —
++   *  `dot` ajoute une pastille de couleur après le texte (l'état d'une vanne),
++   *  `label` nomme la pastille pour les lecteurs d'écran, `point` (« id/clé »)
++   *  la rend tapable : un tap ouvre son historique. `level` : la grandeur
++   *  montrée en pourcentage quand la commande est allumée. */
+   let { id, name = null, icon = 'light', subs = [], level = null, toggles = true } = $props();
+ 
+   const d = $derived(device(id));
+@@ -24,6 +25,20 @@
+     if (!toggles || !ok) return;
+     toggle(id, label);
+   }
++
++  /** Un relevé se lit, il ne commande pas : son tap ouvre l'historique du
++   *  point, jamais l'appareil de la rangée. */
++  function openHistory(point) {
++    const cut = point.indexOf('/');
++    historyOf(point.slice(0, cut), point.slice(cut + 1));
++  }
++
++  const historyLabel = (point, text) => {
++    const cut2 = point.indexOf('/');
++    const who = spokenNameOf(point.slice(0, cut2));
++    // Le chiffre dit la valeur (« 20.3° »), le libellé du point dit de quoi.
++    return t('maison.historique.ouvrir', { name: `${who} · ${pointLabel(null, point.slice(cut2 + 1))} ${text}` });
++  };
+ </script>
+ 
+ <div class="row" class:on class:off={!ok}>
+@@ -43,7 +58,13 @@
+ 
+   <span class="subs">
+     {#each subs as s (s.icon + s.text)}
+-      <span class="sub {s.tone ?? ''}" title={s.title ?? s.text} role={s.label ? 'img' : undefined} aria-label={s.label}><Icon name={s.icon} size={13} />{s.text}{#if s.dot != null}<i class="dot {s.dot}" aria-hidden="true"></i>{/if}</span>
++      {#if s.point}
++        <button class="sub {s.tone ?? ''} live" title={s.title ?? s.text} aria-label={historyLabel(s.point, s.text)} onclick={() => openHistory(s.point)}>
++          <Icon name={s.icon} size={13} />{s.text}{#if s.dot != null}<i class="dot {s.dot}" aria-hidden="true"></i>{/if}
++        </button>
++      {:else}
++        <span class="sub {s.tone ?? ''}" title={s.title ?? s.text} role={s.label ? 'img' : undefined} aria-label={s.label}><Icon name={s.icon} size={13} />{s.text}{#if s.dot != null}<i class="dot {s.dot}" aria-hidden="true"></i>{/if}</span>
++      {/if}
+     {/each}
+   </span>
+ </div>
+@@ -156,6 +177,32 @@
+     white-space: nowrap;
+   }
+ 
++  /* Un relevé qu'on peut interroger : la pastille se comporte comme un
++     bouton, sans prendre le geste de la rangée (qui commande l'appareil).
++     La zone tapable s'agrandit sans grossir la pastille : sur une tablette
++     murale, 22 px de haut ne se touchent pas au doigt. */
++  .sub.live {
++    border: 0;
++    font: inherit;
++    font-size: 12px;
++    font-weight: 650;
++    padding-block: 11px;
++    margin-block: -8px;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .sub.live:hover {
++      background: var(--surface-3);
++      color: var(--ink-2);
++    }
++  }
++
++  .sub.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .sub.warm {
+     background: var(--warm-soft);
+     color: var(--warm-ink);
+diff --git a/web/src/maison/ui/TabletteRows.svelte b/web/src/maison/ui/TabletteRows.svelte
+--- a/web/src/maison/ui/TabletteRows.svelte
++++ b/web/src/maison/ui/TabletteRows.svelte
+@@ -11,7 +11,7 @@
+   // en lecture seule, `level` affiche un pourcentage, `power` ajoute la
+   // consommation d'une pince du Linky, `valve` nomme la vanne thermostatique
+   // dont la rangée porte le témoin (à défaut, la vanne de sa pièce).
+-  import { home, hub, value, device, nameOf, roomOf, deviceKind, tempIgnored } from '../lib/home.svelte.js';
++  import { home, hub, value, device, nameOf, roomOf, deviceKind, tempIgnored, readingPoint } from '../lib/home.svelte.js';
+   import { roomKey } from '../lib/rooms.js';
+   import { powerTone } from '../lib/power.js';
+   import { t } from '../../lib/i18n.svelte.js';
+@@ -55,16 +55,19 @@
+     );
+   }
+ 
+-  const readings = (sensor, extra = null) => {
++  const readings = (sensor, extra = null, extraPoint = null) => {
+     // La même règle de couleur que le bandeau d'en-tête : un wattage n'a
+     // jamais deux couleurs sur le même écran.
+-    const watt = extra == null || !Number.isFinite(Number(extra)) ? null : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: powerTone(extra) || 'cool' }];
++    const watt = extra == null || !Number.isFinite(Number(extra)) ? null : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: powerTone(extra) || 'cool', point: extraPoint }];
+     if (!sensor) return watt ?? [];
+     const list = [];
+-    const temp = value(sensor.id, 'temperature') ?? value(sensor.id, 'temp_current');
+-    const hum = value(sensor.id, 'humidity') ?? value(sensor.id, 'humidity_value');
+-    if (typeof temp === 'number') list.push({ icon: 'thermometer', text: `${temp.toFixed(1)}°` });
+-    if (typeof hum === 'number') list.push({ icon: 'humidity', text: `${Math.round(hum)} %` });
++    // La clé que l'appareil rapporte vraiment, pour ouvrir son historique.
++    const tKey = readingPoint(sensor.id, ['temperature', 'temp_current']);
++    const hKey = readingPoint(sensor.id, ['humidity', 'humidity_value']);
++    const temp = tKey ? value(sensor.id, tKey) : null;
++    const hum = hKey ? value(sensor.id, hKey) : null;
++    if (typeof temp === 'number') list.push({ icon: 'thermometer', text: `${temp.toFixed(1)}°`, point: `${sensor.id}/${tKey}` });
++    if (typeof hum === 'number') list.push({ icon: 'humidity', text: `${Math.round(hum)} %`, point: `${sensor.id}/${hKey}` });
+     return [...list, ...(watt ?? [])];
+   };
+ 
+@@ -73,7 +76,7 @@
+     if (!d) return null;
+     const fan = [d.id, ...(d.members ?? [])].map((m) => device(m)).find((x) => x?.points.some((p) => p.key === 'fan_speed'));
+     const v = fan ? value(fan.id, 'fan_speed') : null;
+-    return typeof v === 'number' ? { icon: 'fan', text: `${v} %` } : null;
++    return typeof v === 'number' ? { icon: 'fan', text: `${v} %`, point: `${fan.id}/fan_speed` } : null;
+   }
+ 
+   // Les quatre états d'une vanne, chacun sa teinte de pastille : ce qu'elle
+@@ -81,11 +84,12 @@
+   const VANNE_DOT = { heating: 'warm', idle: 'cool', off: 'off', offline: 'alert' };
+   const VANNE_WORD = { heating: 'vanne_chauffe', idle: 'vanne_repos', off: 'vanne_eteinte', offline: 'vanne_hors_ligne' };
+ 
+-  /** Le témoin d'une vanne thermostatique : son état en couleur, sa consigne
+-   *  en clair. Purement visuel — on commande la vanne sur la page Chauffage.
+-   *  Une pastille sans souris (une tablette) doit dire l'état : la consigne
+-   *  seule quand elle chauffe ou attend, le mot quand elle ne fait rien
+-   *  (éteinte, hors ligne), et toujours en `aria-label`. */
++  /** Le témoin d'une vanne thermostatique : son état en couleur, et la
++   *  température qu'elle **mesure** — le chiffre qu'on tape doit être celui
++   *  dont l'historique s'ouvre. La consigne, elle, reste dans l'infobulle et
++   *  sur la page Chauffage : c'est là qu'on la règle.
++   *  Une pastille sans souris (une tablette) doit dire l'état : le mot quand
++   *  la vanne ne fait rien (éteinte, hors ligne), et toujours en `aria-label`. */
+   function witnessOfRow(def) {
+     // Une vanne nommée mais absente (identifiant périmé) retombe sur celle de
+     // la pièce : la rangée garde son témoin plutôt que de le perdre en silence.
+@@ -95,9 +99,21 @@
+     const etat = t(`maison.accueil.${VANNE_WORD[w.state]}`);
+     const temp = w.setpoint == null ? null : `${w.setpoint.toFixed(1)}°`;
+     const talking = w.state === 'heating' || w.state === 'idle';
+-    const text = talking ? (temp ?? etat) : etat;
+     const title = temp ? t('maison.accueil.vanne_titre', { etat, temp }) : t('maison.accueil.vanne_titre_seule', { etat });
+-    return { icon: 'radiator', text, dot: VANNE_DOT[w.state], title, label: title };
++    // La température mesurée par la vanne : c'est elle qu'on lit et qu'on
++    // interroge. À défaut, la consigne — mais alors aucun historique : ouvrir
++    // une courbe sous un chiffre qui n'est pas elle tromperait le doigt.
++    const mKey = valve ? readingPoint(valve.id, ['local_temperature', 'temperature']) : null;
++    const measured = mKey ? value(valve.id, mKey) : null;
++    const shown = talking ? (typeof measured === 'number' ? `${measured.toFixed(1)}°` : (temp ?? etat)) : etat;
++    return {
++      icon: 'radiator',
++      text: shown,
++      dot: VANNE_DOT[w.state],
++      title,
++      label: title,
++      point: typeof measured === 'number' ? `${valve.id}/${mKey}` : null,
++    };
+   }
+ 
+   // Une rangée prête à rendre : l'appareil résolu, son nom, ses pastilles.
+@@ -107,7 +123,8 @@
+     (home.config?.tablette?.rows ?? []).flatMap((def) => {
+       const d = resolve(def);
+       if (!d) return [];
+-      const extra = def.power ? value(home.config?.badges?.linky ?? 'linky:linky', def.power) : null;
++      const linky = home.config?.badges?.linky ?? 'linky:linky';
++      const extra = def.power ? value(linky, def.power) : null;
+       const fan = fanOf(d);
+       const vanne = witnessOfRow(def);
+       const label = def.nkey ? t(def.nkey) : (def.name ?? nameOf(d.id));
+@@ -120,7 +137,7 @@
+           level: def.level ?? null,
+           toggles: def.toggles !== false,
+           pair: def.pair === true,
+-          subs: [...(vanne ? [vanne] : []), ...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra)],
++          subs: [...(vanne ? [vanne] : []), ...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra, def.power ? `${linky}/${def.power}` : null)],
+         },
+       ];
+     }),
+diff --git a/web/src/maison/ui/ValveCard.svelte b/web/src/maison/ui/ValveCard.svelte
+--- a/web/src/maison/ui/ValveCard.svelte
++++ b/web/src/maison/ui/ValveCard.svelte
+@@ -1,7 +1,7 @@
+ <script>
+   // One thermostatic valve: what it reads, what it does, and who runs it —
+   // the built-in timetable or the household's automations.
+-  import { value, reachable, pending, act, nameOf, home } from '../lib/home.svelte.js';
++  import { value, reachable, pending, act, nameOf, home, historyOf } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+   import ScheduleEditor from './ScheduleEditor.svelte';
+@@ -91,7 +91,11 @@
+ <section class="valve" class:off={mode === 'off'} class:stale={!online}>
+   <header>
+     <h3><Icon name="radiator" size={18} />{nameOf(id)}</h3>
+-    <span class="room num" title={t('chauffage.piece')}>{local != null ? `${Math.round(Number(local))}°` : '—'}</span>
++    {#if local != null}
++      <button class="room num live" title={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('chauffage.piece')}` })} aria-label={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('chauffage.piece')}` })} onclick={() => historyOf(id, 'local_temperature')}>{Math.round(Number(local))}°</button>
++    {:else}
++      <span class="room num" title={t('chauffage.piece')}>—</span>
++    {/if}
+     {#if low}
+       <span class="warn" title={t('chauffage.pile_basse', { pct: battery })}><Icon name="alert" size={15} />{battery} %</span>
+     {/if}
+@@ -192,6 +196,32 @@
+     font-weight: 300;
+   }
+ 
++  /* La température lue par la vanne ouvre son historique ; la consigne,
++     elle, se règle plus bas. */
++  .room.live {
++    border: 0;
++    padding: 2px 8px;
++    margin-right: -8px;
++    border-radius: var(--r-sm);
++    background: none;
++    color: inherit;
++    font: inherit;
++    font-size: 22px;
++    font-weight: 300;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .room.live:hover {
++      background: var(--surface-2);
++    }
++  }
++
++  .room.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .warn {
+     display: inline-flex;
+     align-items: center;
+diff --git a/web/src/maison/ui/WeatherNow.svelte b/web/src/maison/ui/WeatherNow.svelte
+--- a/web/src/maison/ui/WeatherNow.svelte
++++ b/web/src/maison/ui/WeatherNow.svelte
+@@ -2,10 +2,11 @@
+   // La météo du moment, en une ligne (38 px) : le ciel, la température, le
+   // libellé et les extrêmes du jour. C'est la carte « conditions » de la
+   // tablette, réduite à ce qu'on lit d'un coup d'œil.
+-  import { home, value, num } from '../lib/home.svelte.js';
++  import { home, value, num, historyOf } from '../lib/home.svelte.js';
+   import { watchSky } from '../lib/sky.svelte.js';
+   import { weatherOf } from '../lib/icons.js';
+   import { onMount } from 'svelte';
++  import { t } from '../../lib/i18n.svelte.js';
+   import Icon from './Icon.svelte';
+ 
+   const out = $derived(home.config?.outdoor ?? {});
+@@ -19,7 +20,9 @@
+ {#if w}
+   <section class="now" aria-label={now.label}>
+     <Icon path={now.icon} size={20} />
+-    <b class="num">{num(value(w, 'temperature'), 0)}°</b>
++    <button class="temp live" onclick={() => historyOf(w, 'temperature')} title={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })}>
++      <b class="num">{num(value(w, 'temperature'), 0)}°</b>
++    </button>
+     <span class="label">{now.label}</span>
+     <span class="range num">↑ {num(value(w, 'today_max'), 0)}° ↓ {num(value(w, 'today_min'), 0)}°</span>
+   </section>
+@@ -45,6 +48,28 @@
+     color: var(--ink);
+   }
+ 
++  /* La température extérieure ouvre son historique : c'est un relevé, pas
++     une commande — le bouton resterait sinon invisible dans la ligne. */
++  .temp.live {
++    border: 0;
++    padding: 2px 4px;
++    margin: -2px -4px;
++    border-radius: var(--r-sm);
++    background: none;
++    cursor: pointer;
++  }
++
++  @media (hover: hover) {
++    .temp.live:hover {
++      background: var(--surface-2);
++    }
++  }
++
++  .temp.live:focus-visible {
++    outline: 2px solid var(--cool);
++    outline-offset: 2px;
++  }
++
+   .label {
+     font-size: 13px;
+     font-weight: 650;
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -45,10 +45,11 @@
+   "maison.air.mauvais": "Bad",
+   "maison.dehors.titre": "Outside",
+   "maison.dehors.sous_titre": "The weather, the air, the pool and the garden.",
+-  "maison.dehors.ressenti": "Feels like {feels}° · high {max}° · low {min}°",
++  "maison.dehors.ressenti": "Feels like",
++  "maison.dehors.ressenti_ecart": "high {max}° · low {min}°",
+   "maison.dehors.humidite": "Humidity",
+   "maison.dehors.vent": "Wind",
+-  "maison.dehors.rafales": "gusts {speed}",
++  "maison.dehors.rafales": "gusts",
+   "maison.dehors.pluie_jour": "Rain today",
+   "maison.dehors.risque": "{pct}% chance",
+   "maison.dehors.soleil": "Sun",
+@@ -306,5 +307,33 @@
+   "chauffage.neutraliser_confirmer": "Write one flat {deg}° setpoint to {n} day(s)?",
+   "chauffage.table.invalide": "Invalid day(s): {jours}",
+   "chauffage.preset_confirmer": "Switch all {n} valve(s) to “{mode}”?",
+-  "chauffage.preset_fait": "Applied: {mode}"
++  "chauffage.preset_fait": "Applied: {mode}",
++  "maison.historique.aria": "History of {name}",
++  "maison.historique.ouvrir": "See the history of {name}",
++  "maison.historique.plage_6h": "6 h",
++  "maison.historique.plage_24h": "24 h",
++  "maison.historique.plage_7j": "7 d",
++  "maison.historique.chargement": "Reading the history…",
++  "maison.historique.indisponible": "History unavailable.",
++  "maison.historique.vide": "No change recorded over this period.",
++  "maison.historique.courbe": "Curve of {name}",
++  "maison.historique.maintenant": "Now",
++  "maison.historique.min": "Min",
++  "maison.historique.max": "Max",
++  "maison.historique.niveau": "level",
++  "maison.historique.oui": "yes",
++  "maison.historique.non": "no",
++  "maison.historique.changements_one": "{count} change",
++  "maison.historique.changements_other": "{count} changes",
++  "maison.historique.moyenne": "average per bucket, min/max band",
++  "maison.point.temperature": "Temperature",
++  "maison.point.local_temperature": "Measured temperature",
++  "maison.point.humidity": "Humidity",
++  "maison.point.pressure": "Pressure",
++  "maison.point.battery": "Battery",
++  "maison.point.voltage": "Voltage",
++  "maison.point.power": "Power",
++  "maison.point.watts": "Power",
++  "maison.point.occupied_heating_setpoint": "Setpoint",
++  "maison.point.setpoint": "Setpoint"
+ }
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -52,10 +52,11 @@
+   "maison.air.mauvais": "Mauvais",
+   "maison.dehors.titre": "Dehors",
+   "maison.dehors.sous_titre": "Le temps qu’il fait, l’air, la piscine et le jardin.",
+-  "maison.dehors.ressenti": "Ressenti {feels}° · max {max}° · min {min}°",
++  "maison.dehors.ressenti": "Ressenti",
++  "maison.dehors.ressenti_ecart": "max {max}° · min {min}°",
+   "maison.dehors.humidite": "Humidité",
+   "maison.dehors.vent": "Vent",
+-  "maison.dehors.rafales": "rafales {speed}",
++  "maison.dehors.rafales": "rafales",
+   "maison.dehors.pluie_jour": "Pluie aujourd’hui",
+   "maison.dehors.risque": "{pct} % de risque",
+   "maison.dehors.soleil": "Soleil",
+@@ -306,5 +307,33 @@
+   "chauffage.neutraliser_confirmer": "Écrire une consigne unique de {deg}° sur {n} jour(s) ?",
+   "chauffage.table.invalide": "Jour(s) invalide(s) : {jours}",
+   "chauffage.preset_confirmer": "Passer les {n} vanne(s) en « {mode} » ?",
+-  "chauffage.preset_fait": "Appliqué : {mode}"
++  "chauffage.preset_fait": "Appliqué : {mode}",
++  "maison.historique.aria": "Historique de {name}",
++  "maison.historique.ouvrir": "Voir l’historique de {name}",
++  "maison.historique.plage_6h": "6 h",
++  "maison.historique.plage_24h": "24 h",
++  "maison.historique.plage_7j": "7 j",
++  "maison.historique.chargement": "Lecture de l’historique…",
++  "maison.historique.indisponible": "Historique indisponible.",
++  "maison.historique.vide": "Aucun changement enregistré sur cette période.",
++  "maison.historique.courbe": "Courbe de {name}",
++  "maison.historique.maintenant": "Maintenant",
++  "maison.historique.min": "Min",
++  "maison.historique.max": "Max",
++  "maison.historique.niveau": "niveau",
++  "maison.historique.oui": "oui",
++  "maison.historique.non": "non",
++  "maison.historique.changements_one": "{count} changement",
++  "maison.historique.changements_other": "{count} changements",
++  "maison.historique.moyenne": "moyenne par tranche, bande min/max",
++  "maison.point.temperature": "Température",
++  "maison.point.local_temperature": "Température mesurée",
++  "maison.point.humidity": "Humidité",
++  "maison.point.pressure": "Pression",
++  "maison.point.battery": "Batterie",
++  "maison.point.voltage": "Tension",
++  "maison.point.power": "Puissance",
++  "maison.point.watts": "Puissance",
++  "maison.point.occupied_heating_setpoint": "Consigne",
++  "maison.point.setpoint": "Consigne"
+ }
