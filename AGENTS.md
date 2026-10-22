@@ -80,20 +80,27 @@ ssh moli-os 'cd /opt/moli-os && docker compose restart moli-os'
 ssh moli-os 'cd /opt/moli-os && curl -s http://127.0.0.1:8790/api/health'     # drivers_running, journal_failures
 ```
 
-Blocs en place (relevé 2026-10-16, 10 drivers) :
+Blocs en place (relevé 2026-10-22, 14 blocs `[[driver]]`) :
 - `z2m` : `host=192.168.1.78`, `port=1883`, `base_topic=zigbee2mqtt`, `username=moli`, `password_env=MOLI_Z2M_PASSWORD`.
 - `bambu-a1mini` / `bambu-a1` : `host`, `serial`, `name` (MQTT-TLS 8883, TOFU cert).
 - `frigate` : `host=192.168.1.78`, `base_topic=frigate`, `api=http://192.168.1.188:5000`, mêmes creds MQTT que z2m.
 - `hue` : `host=192.168.1.46` (CLIP v2, clé au coffre, TOFU cert).
 - `tuya` : `devices_file=data/tuya.json` (prise + lampes + ventilo-lampe ; clés au coffre ; caméras `sp` reportées).
 - `meteo` / `air` : `kind=profile`, `profile=open-meteo[-air]`, `vars={lat=46.231,lon=1.922}`.
+- `tempo` : `kind=profile`, `profile=tempo` (couleur EDF du jour et du lendemain, page Accueil).
+- `linky` : `host=192.168.1.78`, `port=1883`, `base_topic=moli/linky`, mêmes creds MQTT que z2m (republication HA).
+- `esphome-box` : `host=192.168.1.152`, `mac=b4:3a:45:12:35:60`, `wake_words=["okay_nabu"]` (satellite vocal, seule voix de la maison).
+- `alexa` : `domain=amazon.fr` (compte lié depuis Système, jeton au coffre).
+- `telegram` : `token_file=/data/telegram.token` (0600, hors dépôt), `chats=[1232618977]` ; bot dédié `@foranhomebot`, envoi seul (voir §10).
+- `moli-lab` : `kind=host`, `name="moli-lab"`, `root="/host"` — le CT125 lui-même (processeur, mémoire, températures, réseau). Le conteneur tourne avec `pid: host` et monte `/proc`,`/sys` sous `/host` (`compose.override.yaml`), sans quoi il mesurerait le PVE (16 cœurs, 15 Go). Disques et conteneurs viennent de `data/infra.json` (voir §11).
 - `[assistant]` : `base_url=http://192.168.1.200:8092/v1`, `model=current` (voir §4).
 - `[automations]` : `latitude=46.231`, `longitude=1.922`, `timezone=Europe/Paris`.
 - `[energy]` : compteurs z2m (`role=appliance` / `total`), `timezone`, `currency`.
 
-> Comptes : `check-config` annonce les blocs `[[driver]]` (**8** : z2m, bambu ×2, frigate,
-> hue, tuya, meteo, air) ; `/api/health` ajoute les pilotes maison (`energie`, `personnes`)
-> → **10**. Les notes `accueil-*.md` citent les relevés de leur époque (7/9) — snapshots datés.
+> Comptes : `check-config` annonce les blocs `[[driver]]` (**14** : z2m, bambu ×2, frigate,
+> hue, meteo, air, tuya, tempo, linky, esphome-box, alexa, telegram, moli-lab) ;
+> `/api/health` ajoute les pilotes maison (`energie`, `personnes`) → **16**. Les notes
+> `accueil-*.md` citent les relevés de leur époque (7/9/10) — snapshots datés.
 
 ### 2. Secrets (coffre chiffré `data/secrets.enc` + `data/master.key`)
 
@@ -187,6 +194,8 @@ rollback : `notes/tablette-2025-parity.md`. Autres patchs de la même livraison 
 | 8 | `accueil-trv-witness.patch` | `notes/accueil-trv-witness.md` — témoin de vanne sur la rangée Chambre (état + consigne, non cliquable), rangée Appart sur la puissance résiduelle (watts seuls, sans mention) ; **+ 2 clés dans `data/home.json`, hors patch** |
 | 9 | `accueil-badges-rebuild.patch` | `notes/accueil-badges-rebuild.md` — bandeau de pastilles reconstruit : Tempo + 2 puissances + prises, neutre par défaut, aligné sur les colonnes |
 | 10 | `accueil-history.patch` | `notes/accueil-history.md` — tout relevé cliquable ouvre l'historique : feuille Maison `HistorySheet` sur `hub.chart` (le même canal que l'Atelier), plages 6 h/24 h/7 j, courbe + min/max + liste de changements ; pastilles de puissance du bandeau **inchangées** (`#/energie`), consigne de vanne non cliquable |
+| 11 | `accueil-pieces-justes.patch` | `notes/accueil-pieces-justes.md` — les pastilles d'une rangée disent la vérité de sa pièce : `web/src/maison/lib/layout.js` (module pur) dérive chaque rangée de la pièce de son appareil, y lit **une pastille par grandeur** (température, humidité, présence), reconnaît `local_temperature`, remonte au **groupe Hue** pour une lampe ; `kinds.js` porte désormais la **seule** classification (`deviceKind`, `powerKey`, regex) et **réexporte** `VALVE_KEYS` de `lib/trv.js` (son propriétaire), partagée par la rangée, le Plan et `home.svelte.js` ; la règle de pièce (`roomKey`, `roomNamed`, `roomOf`) vit dans `lib/rooms.js` seule, alias de `home.json` compris ; `/api/home` rechargé sur `label_changed` (sans F5) ; **+ 5 étiquettes `room` hors patch** (`notes/patches/labels.toml.pieces`) |
+| 12 | `accueil-perf-lite.patch` | `notes/accueil-perf-lite.md` — rendu de l'Accueil allégé pour la tablette : `@keyframes breathe` de l'orbe ne porte plus de `filter` animé (le `saturate` passe en statique, 21 → 33 fps sous throttle 20×), et le ciel météo démarre **figé** (`isLean` dans `lib/lean.js` : `deviceMemory ≤ 1`, ou `hardwareConcurrency ≤ 4` **et** `deviceMemory ≤ 2`, ou mouvement réduit — un portable 4 cœurs/8 Go garde son ciel) ; la carte Plan sert la vignette que `/api/plan` annonce (champ `thumb`, calculé par `crates/moli-api/src/plan.rs` quand le fichier existe) et retombe sur l'originale sinon — `#/plan` garde l'originale ; **+ la vignette `data/plan/<image>.webp` hors patch** (2,79 Mo → 37 Ko) |
 
 Hors chaîne, côté **moteur** : `notes/patches/moteur-stale-rule.patch` — ajoute
 `Rule::Stale { point, for_s }` (« ce capteur ne dit plus rien depuis N »), la seule
@@ -200,7 +209,11 @@ déjà compilé dans l'image.
 `SkyHero`. Appliquer les sept dans cet ordre, sans en sauter un, puis le n° 8
 (`accueil-trv-witness`, qui part de leur état), puis le n° 9 (`accueil-badges-rebuild`,
 qui reprend le bandeau de pastilles), puis le n° 10 (`accueil-history`, qui part de
-leur état et n'a besoin d'aucune clé `home.json`).
+leur état et n'a besoin d'aucune clé `home.json`), puis le n° 11
+(`accueil-pieces-justes`, qui part de leur état ; ses 5 étiquettes `room` vivent
+dans `data/labels.toml` et se reposent avec `notes/patches/labels.toml.pieces`), puis
+le n° 12 (`accueil-perf-lite`, qui part de leur état ; sa vignette `.webp` du plan vit
+dans `data/plan/` et se repose en même temps que `data/plan.json`).
 
 **`accueil-plan-pins.patch`** : sur la carte Plan de l'Accueil, **retire les relevés**
 (pas de `.reading` : `pinReading` n'est plus importé), **réduit les jetons** (34 → 22 px,
@@ -288,6 +301,64 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 - Conteneur : `TZ=Europe/Paris` dans `moli.env`, puis `docker compose up -d`.
 - Logs conteneur en `…Z` (UTC) = normal (formateur `tracing_subscriber` par défaut), l'instant est correct.
 
+### 10. Telegram (bot dédié)
+
+Le pilote `telegram` envoie du texte par l'API des bots en HTTPS direct, **sans relais**
+(pas de n8n). Il **n'écoute pas** : réception (« parler à Moli depuis Telegram ») non faite,
+donc aucun `getUpdates` concurrent à installer ailleurs.
+
+- **Bot dédié** `@foranhomebot` (« Foran N8N Home », id `8557113347`) — distinct du bot HA
+  `@ForanHome_bot` (`6585149969`), qui reste intact.
+- **Jeton** : dans le **coffre** (`moli-os secrets set telegram token`), le pilote le lit
+  au démarrage par `token_file`. Sur ce CT, `token_file = /data/telegram.token` (`0600`,
+  `1000:1000`) : un fichier hors dépôt (`/data` gitignored) et **absent** de la liste
+  `FILES` de `moli-os backup` → à rejouer après un `restore`. Le dépôt préfère un tmpfs
+  (`/run/secrets/telegram.token`, défaut du pilote) ; `/data` est un compromis assumé ici
+  (survit au redémarrage du conteneur). ⚠️ Dans tous les cas le jeton n'apparaît **jamais**
+  en argv (`ps` le montre) ni dans le chat.
+- **Chats** : `chats = [1232618977]` (Pyra / `odinouf`) ; 10 max. Un chat = un id d'utilisateur.
+- **Prérequis** : la personne écrit `/start` au bot une fois (Telegram refuse d'écrire avant).
+
+```sh
+# pousser un jeton sans qu'il apparaisse (tapé à l'aveugle, jamais en argv) :
+read -rs T; printf %s "$T" | ssh moli-os 'umask 077; cat > /opt/moli-os/data/telegram.token && chmod 600 /opt/moli-os/data/telegram.token && chown 1000:1000 /opt/moli-os/data/telegram.token'
+unset T
+
+# vérifier le bot et relever son chat id (le jeton ne passe jamais en argv :
+# curl lit son URL depuis stdin via --config -) :
+read -rs T
+printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$T" | ssh moli-os 'curl -s --config -'
+printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$T" | ssh moli-os 'curl -s --config -'
+unset T
+
+# envoyer un message par la maison (journalisé, garde des pièces protégées) :
+ssh moli-os 'curl -s -X POST http://127.0.0.1:8790/api/command -H "content-type: application/json" -H "x-moli-origin: ui" -d "{\"point\":\"telegram:bot/notify\",\"value\":\"test\"}"'
+```
+
+Un `409 Conflict: can't use getUpdates method while webhook is active` signifie qu'un webhook
+traîne sur ce jeton → `getWebhookInfo`, puis `deleteWebhook` **si** le bot est bien recyclé.
+Canal `telegram` des automatismes = une commande sur le point `notify` de cet appareil.
+Référence : `notes/telegram-moli.md`.
+
+### 11. Infra du CT125 (page `#/infra`)
+
+La page `#/infra` lit l'appareil « Serveur de la maison » (pilote `host`, bloc `moli-lab`,
+voir §1) et `data/infra.json` (conteneurs, disques) pour le reste.
+
+- **Pas de CLI Docker, pas de socket dans Moli** : un script côté hôte,
+  `/usr/local/bin/moli-infra` (source `notes/patches/infra-host.py`), écrit
+  `data/infra.json` toutes les minutes via **l'API Docker** sur `/var/run/docker.sock`
+  (unix socket, `http.client`). API plutôt que CLI : JSON natif, pas de texte à parser,
+  un seul processus par minute au lieu d'un `docker inspect` par conteneur et par disque.
+- **Cron** : `/etc/cron.d/moli-infra`, `* * * * * root /usr/local/bin/moli-infra`, `PATH`
+  explicite.
+- **Watchdog** : le même script interroge `/api/health` (pas de `healthcheck` Docker, cf.
+  `docs/components/exploitation.md`). Deux échecs consécutifs → `POST /containers/moli-os/restart`,
+  au plus un redémarrage par 10 min. Un conteneur **arrêté exprès** (exit 0/143, pas OOM) n'est
+  pas relancé — un restore (§8) ne doit pas être interrompu. Drapeau `/var/lib/moli-infra/pause`
+  pour geler la surveillance à chaud.
+- Détail, schéma du JSON, preuves et rollback : `notes/infra-moli.md`.
+
 ## Sécurité
 
 - « Secrets (mot de passe, clé, code maison) : jamais en clair, jamais dans le chat » — pipe `moli-os secrets set`.
@@ -301,12 +372,14 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | Note | Sujet |
 |---|---|
 | `deploy-lxc125.md` | Identité/accès du CT125, état initial |
+| `infra-moli.md` | Page `#/infra` du CT125 : pilote `host` (`pid: host` + `root="/host"`), script `infra-host.py` par l'API Docker, cron 1 min, redémarrage après 2 échecs de santé (garde 10 min) |
 | `version-tracking.md` | Suivi de version amont |
 | `hue-migration.md` | Pont Hue (CLIP v2, clé récoltée HA) |
 | `frigate-migration.md` | NVR Frigate (MQTT + images, purge caméras fantômes) |
 | `zwave-moli.md` | Étude Z-Wave (postponed) |
 | `tuya-migration-assessment.md` | Éval migration Tuya HA→Moli |
 | `ceiling-fan-tuya.md` | Ventilo-lampe Tuya « injoignable » : cause (`tuya.json` sans `ip` → `seek` jamais lancé), IP prouvées, commandes testées, correctif `tuya-seek-home-network` |
+| `telegram-moli.md` | Pilote Telegram : bot dédié `@foranhomebot`, jeton dans `data/telegram.token` (0600), chat `1232618977`, test `notify` prouvé |
 | `fuseaux-horaires.md` | Fuseau LXC/conteneur |
 | `dehors.md` | Page Dehors (météo/air/piscine) |
 | `dashboard-clim.md` | Carte clim conditionnelle |
@@ -321,6 +394,8 @@ ailleurs, les secrets restaurés sont illisibles. Référence : `docs/components
 | `accueil-trv-witness.md` | Témoin de vanne thermostatique sur la rangée **Chambre** de l'Accueil (point de couleur + consigne, non cliquable ; « éteinte »/« hors ligne » écrits) et rangée **Appart** sur la puissance **résiduelle**, en watts seuls — patch `accueil-trv-witness` (n° 8) |
 | `accueil-badges-rebuild.md` | Bandeau de pastilles de l'Accueil reconstruit depuis la version d'origine : Tempo (jour + demain), 2 puissances, prises ; alarmes et contacts retirés, neutre par défaut (couleur = anomalie seule), aligné sur les colonnes — patch `accueil-badges-rebuild` (n° 9) |
 | `accueil-history.md` | Tout relevé du dashboard ouvre son historique : feuille Maison (`HistorySheet.svelte`, jetons jour/nuit) sur `hub.chart` — le canal de l'Atelier, sans route neuve ; plages 6 h/24 h/7 j, courbe escalier + bande min/max, liste de changements pour binaires/textuels ; périmètre Accueil/Pièces/Dehors/Chauffage/Plan/Impression ; pastilles de puissance du bandeau **restent** des liens `#/energie`, consigne de vanne non cliquable — patch `accueil-history` (n° 10) |
+| `accueil-pieces-justes.md` | Les pastilles d'une rangée disent la vérité de sa pièce : pièce = celle de l'appareil (plus `sensor_room`), **tous** les capteurs d'une pièce agrégés, `local_temperature` reconnu, lampe → **groupe Hue** de sa pièce, règle de pièce unique dans `lib/rooms.js` (alias de `home.json` compris), `/api/home` rechargé sur `label_changed` sans F5 — patch `accueil-pieces-justes` (n° 11) + 5 étiquettes `room` (`notes/patches/labels.toml.pieces`, hors patch) |
+| `accueil-perf-lite.md` | Opti graphique de la tablette : le souffle de l'orbe n'anime plus un `filter` (repaint de couche par frame ; 21 → 33 fps sous throttle 20×), le ciel météo démarre **figé** sur appareil lent (`isLean` : `deviceMemory ≤ 1`, ou `hardwareConcurrency ≤ 4` **et** `deviceMemory ≤ 2` — un portable 4 cœurs/8 Go garde son ciel), et la carte Plan sert la vignette `.webp` que `/api/plan` annonce (`thumb` ; 2,79 Mo → 37 Ko) — patch `accueil-perf-lite` (n° 12) + la vignette `data/plan/<image>.webp` (hors patch) |
 | `accueil-plan-hero.md` | Carte Plan déplacée dans l'en-tête (entre date/heure et météo), **fond blanc retiré** — patch `accueil-plan-hero` (n° 3 de la chaîne) |
 | `satellites-vocal-son.md` | Satellites vocal/son : ESP32 S3 Box (firmware codecs WAV/FLAC, OTA), Alexa, sidecars Piper/Whisper, drivers `esphome-box`/`alexa` |
 | `prise-lave-vaisselle.md` | Renommage prise `0xa4c138bb3c3e1f88` (Lave-Vaisselle) |

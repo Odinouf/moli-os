@@ -52,6 +52,10 @@ Repointer la start URL de Fully Kiosk vers HA : `http://192.168.1.78:8123/tablet
 Si la lenteur gêne : alléger le dashboard (lazy-load des pages lourdes — Solaire/map, PDF —,
 découpage CSS). Chantier à part, pas un prérequis.
 
+**Engagé le 2026-10-22** (patch n° 12 `accueil-perf-lite`) : orbe sans `filter` animé,
+ciel météo figé sur appareil lent, vignette `.webp` pour la carte Plan. Voir
+`accueil-perf-lite.md` — 21 → 58,8 fps médians sous throttle 20×.
+
 ## Hygiène
 
 Aucun secret consigné : le mot de passe Fully Kiosk n'est **jamais** recopié ici.

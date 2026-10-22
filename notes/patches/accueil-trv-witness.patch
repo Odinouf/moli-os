@@ -36,10 +36,10 @@ diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.
 index 673edcc..875302a 100644
 --- a/web/src/maison/lib/home.svelte.js
 +++ b/web/src/maison/lib/home.svelte.js
-@@ -3,7 +3,10 @@
- 
+@@ -4,7 +4,10 @@
  import { hub, connect, login, decide, refreshSession } from '../../lib/hub.svelte.js';
  import { t, locale } from '../../lib/i18n.svelte.js';
+ 
 -export { hub };
 +import { roomKey } from './rooms.js';
 +import { VALVE_KEYS } from './trv.js';

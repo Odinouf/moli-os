@@ -1,0 +1,233 @@
+diff --git a/web/src/maison/moli/Orb.svelte b/web/src/maison/moli/Orb.svelte
+--- a/web/src/maison/moli/Orb.svelte
++++ b/web/src/maison/moli/Orb.svelte
+@@ -29,6 +29,9 @@
+     background:
+       radial-gradient(circle at 34% 28%, rgb(255 255 255 / 70%) 0 14%, transparent 15%),
+       conic-gradient(from 200deg, #f5c84b, #f0a53a, #ef7f5a, #8f8cf5, #5fb4f0, #f5c84b);
++    /* The warmth is fixed: animating a filter repaints the whole layer on
++       every frame, which costs a slow tablet most of its frames. */
++    filter: saturate(1.2);
+     animation: breathe 5s ease-in-out infinite;
+   }
+ 
+@@ -77,7 +80,6 @@
+   @keyframes breathe {
+     50% {
+       transform: scale(1.05) rotate(18deg);
+-      filter: saturate(1.2);
+     }
+   }
+ 
+diff --git a/web/src/maison/ui/WeatherMap.svelte b/web/src/maison/ui/WeatherMap.svelte
+--- a/web/src/maison/ui/WeatherMap.svelte
++++ b/web/src/maison/ui/WeatherMap.svelte
+@@ -8,6 +8,7 @@
+   // size: the house at (tx, ty) of the box, the hour shown (0 = now).
+   import { onMount } from 'svelte';
+   import { WindMap, viewAround, loadLand } from '../lib/windmap.js';
++  import { isLean } from '../lib/lean.js';
+ 
+   let { map, hour = 0, tx = 0.5, ty = 0.5, house = true } = $props();
+ 
+@@ -20,8 +21,19 @@
+   const view = $derived(W && H && map ? viewAround(map, W, H, tx, ty) : null);
+   const pin = $derived(view && map ? [((map.house[0] - view.x0) / (view.x1 - view.x0)) * W, ((map.house[1] - view.y0) / (view.y1 - view.y0)) * H] : null);
+ 
++  // A slow device draws the map once: the stream of particles is a
++  // repaint per frame, and a small tablet has no frame to spare. The
++  // screen still says the same thing (drawStill), just not moving.
++  function lean() {
++    return isLean({
++      deviceMemory: navigator.deviceMemory,
++      hardwareConcurrency: navigator.hardwareConcurrency,
++      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
++    });
++  }
++
+   onMount(() => {
+-    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
++    const still = lean();
+     // A plain copy: the drawing reads it thousands of times a frame.
+     lastMap = map;
+     wm = new WindMap(land, air, map ? $state.snapshot(map) : null, { still });
+diff --git a/web/src/maison/ui/PlanPreview.svelte b/web/src/maison/ui/PlanPreview.svelte
+--- a/web/src/maison/ui/PlanPreview.svelte
++++ b/web/src/maison/ui/PlanPreview.svelte
+@@ -22,6 +22,13 @@
+   const frameW = $derived(Math.round(rawW / 8) * 8);
+   const frameH = $derived(Math.round(rawH / 8) * 8);
+ 
++  // The card draws at ~400 px: the full plan (two thousand pixels wide,
++  // megabytes) is a download the tablet pays and cannot show. The server
++  // names the thumbnail next to the image (`thumb`, a `.webp`) when one
++  // exists; without it the card takes the full image rather than a guess
++  // that would cost a 404 on every load.
++  const src = $derived(floor?.thumb ?? floor?.image);
++
+   // Geometry only: where the plan put each device. The device itself is
+   // looked up live in the markup, so a state tick never re-runs the layout.
+   const spots = $derived((floor?.devices ?? []).map((s) => ({ id: s.id, x: s.x, y: s.y })));
+@@ -131,7 +138,7 @@
+   {#if floor?.image}
+     <div class="shot">
+       <div class="frame">
+-        <img src="/api/plan/images/{floor.image}" alt="" loading="lazy" bind:clientWidth={rawW} bind:clientHeight={rawH} />
++        <img src="/api/plan/images/{src}" alt="" loading="lazy" bind:clientWidth={rawW} bind:clientHeight={rawH} />
+         {#each shown as p (p.id)}
+           {@const d = deviceOf(p.id)}
+           {#if d}
+diff --git a/web/src/maison/lib/lean.js b/web/src/maison/lib/lean.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/lean.js
+@@ -0,0 +1,18 @@
++/**
++ * Whether this screen should settle for a still rendering: the weather map
++ * drawn once instead of a stream of particles. A person who asked for
++ * reduced motion wants none of it; a small tablet (a gigabyte of memory) has
++ * no frame to spare either.
++ *
++ * Cores alone are not enough to condemn a machine: four-core laptops and
++ * desktops with plenty of memory draw the map fine, and freezing the sky
++ * there would take away a signature of the Accueil for nothing. Few cores
++ * count only when the memory says the device is small too. What the browser
++ * does not report is not held against it.
++ */
++export function isLean({ deviceMemory, hardwareConcurrency, reducedMotion } = {}) {
++  if (reducedMotion) return true;
++  const memory = typeof deviceMemory === 'number' ? deviceMemory : null;
++  if (memory !== null && memory <= 1) return true;
++  return typeof hardwareConcurrency === 'number' && hardwareConcurrency <= 4 && memory !== null && memory <= 2;
++}
+diff --git a/web/src/maison/lib/lean.test.js b/web/src/maison/lib/lean.test.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/lean.test.js
+@@ -0,0 +1,37 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { isLean } from './lean.js';
++
++test('a generous device animates', () => {
++  assert.equal(isLean({ deviceMemory: 8, hardwareConcurrency: 8, reducedMotion: false }), false);
++});
++
++test('a gigabyte of memory is the floor, whatever the cores', () => {
++  assert.equal(isLean({ deviceMemory: 1, hardwareConcurrency: 8, reducedMotion: false }), true);
++  assert.equal(isLean({ deviceMemory: 1, hardwareConcurrency: 4, reducedMotion: false }), true);
++});
++
++test('two gigabytes and four cores is also a small device', () => {
++  assert.equal(isLean({ deviceMemory: 2, hardwareConcurrency: 4, reducedMotion: false }), true);
++});
++
++test('four gigabytes, even on four cores, is roomy', () => {
++  assert.equal(isLean({ deviceMemory: 4, hardwareConcurrency: 4, reducedMotion: false }), false);
++  assert.equal(isLean({ deviceMemory: 2, hardwareConcurrency: 8, reducedMotion: false }), false);
++});
++
++test('plenty of memory on any number of cores animates (a 4-core laptop is fine)', () => {
++  assert.equal(isLean({ deviceMemory: 8, hardwareConcurrency: 4, reducedMotion: false }), false);
++  assert.equal(isLean({ deviceMemory: 16, hardwareConcurrency: 2, reducedMotion: false }), false);
++});
++
++test('reduced motion wins over anything the device says', () => {
++  assert.equal(isLean({ deviceMemory: 16, hardwareConcurrency: 16, reducedMotion: true }), true);
++  assert.equal(isLean({ deviceMemory: 16, hardwareConcurrency: 16, reducedMotion: false }), false);
++});
++
++test('what the browser does not say is not held against it', () => {
++  assert.equal(isLean({ deviceMemory: undefined, hardwareConcurrency: undefined, reducedMotion: false }), false);
++  assert.equal(isLean({ deviceMemory: undefined, hardwareConcurrency: 4, reducedMotion: false }), false);
++  assert.equal(isLean({ deviceMemory: 2, hardwareConcurrency: undefined, reducedMotion: false }), false);
++});
+diff --git a/crates/moli-api/src/plan.rs b/crates/moli-api/src/plan.rs
+--- a/crates/moli-api/src/plan.rs
++++ b/crates/moli-api/src/plan.rs
+@@ -93,6 +93,12 @@
+     name: String,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     image: Option<String>,
++    /// A small copy of `image`, if the house keeps one (`.webp` next to it).
++    /// The server fills it in on `GET /api/plan` and drops it on `PUT`, so a
++    /// client that sends the plan back is understood and `plan.json` stays
++    /// what a person wrote.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    thumb: Option<String>,
+     /// Width and height in cm: the floor is drawn (no image).
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     size: Option<[f64; 2]>,
+@@ -388,7 +394,26 @@
+     };
+     match tokio::fs::read(dir.join("plan.json")).await {
+         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+-            Ok(plan) => axum::Json(plan).into_response(),
++            // A floor's thumbnail, when the house keeps one: its name, next to
++            // the image, with a `.webp` extension. A dashboard drawing the
++            // plan small (the Accueil's card) then asks for the file that
++            // exists instead of trying a guess and paying a 404 on every load.
++            Ok(mut plan) => {
++                if let Some(floors) = plan.get_mut("floors").and_then(|f| f.as_array_mut()) {
++                    for floor in floors {
++                        let name = floor
++                            .get("image")
++                            .and_then(|i| i.as_str())
++                            .and_then(thumb_name);
++                        if let Some(thumb) = name
++                            && dir.join("plan").join(&thumb).exists()
++                        {
++                            floor["thumb"] = serde_json::Value::String(thumb);
++                        }
++                    }
++                }
++                axum::Json(plan).into_response()
++            }
+             Err(e) => error(
+                 StatusCode::INTERNAL_SERVER_ERROR,
+                 &moli_i18n::tr!("serveur.plan.fichier_illisible", error = e),
+@@ -398,12 +423,20 @@
+     }
+ }
+ 
++/// The thumbnail's name for an image that may have one: same stem, `.webp`.
++fn thumb_name(image: &str) -> Option<String> {
++    let stem = ["png", "jpg", "jpeg"]
++        .iter()
++        .find_map(|ext| image.strip_suffix(&format!(".{ext}")))?;
++    Some(format!("{stem}.webp"))
++}
++
+ pub(crate) async fn put(
+     Extension(PlanDir(dir)): Extension<PlanDir>,
+     Extension(humans): Extension<Arc<Sessions>>,
+     caller: Caller,
+     headers: HeaderMap,
+-    axum::Json(plan): axum::Json<Plan>,
++    axum::Json(mut plan): axum::Json<Plan>,
+ ) -> Response {
+     if !humans.is_human(&headers, &caller.key) {
+         return error(
+@@ -420,6 +453,10 @@
+     if let Err(why) = plan.check(&dir) {
+         return error(StatusCode::UNPROCESSABLE_ENTITY, &why);
+     }
++    // `thumb` is the server's answer, not the house's: it is never written.
++    for floor in &mut plan.floors {
++        floor.thumb = None;
++    }
+     let text = match serde_json::to_string_pretty(&plan) {
+         Ok(text) => text + "\n",
+         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+@@ -580,6 +617,11 @@
+         assert!(!image_name_ok("0123456789ABCDEF.png"));
+         assert!(!image_name_ok("0123456789abcdef.exe"));
+         assert!(serde_json::from_value::<Plan>(json!({ "floors": [], "extra": 1 })).is_err());
++        // A thumbnail's name comes from the image's, and keeps its checks.
++        assert_eq!(thumb_name("0123456789abcdef.png").as_deref(), Some("0123456789abcdef.webp"));
++        assert_eq!(thumb_name("0123456789abcdef.jpeg").as_deref(), Some("0123456789abcdef.webp"));
++        assert_eq!(thumb_name("0123456789abcdef.webp"), None);
++        assert_eq!(thumb_name("0123456789abcdef.svg"), None);
+         let _ = std::fs::remove_dir_all(dir);
+     }
+ 

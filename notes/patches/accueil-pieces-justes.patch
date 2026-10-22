@@ -1,0 +1,1548 @@
+diff --git a/web/src/maison/lib/layout.js b/web/src/maison/lib/layout.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/layout.js
+@@ -0,0 +1,222 @@
++// The tablette's rows, derived from `data/home.json` (`tablette.rows`) and the
++// hub's devices: which device commands a row, and every reading its room holds.
++//
++// Dependency-free on purpose (no Svelte, no hub), like `lib/trv.js`: the row
++// component and the node tests load the same code. The room rules
++// (`roomKey`, `roomNamed`, `roomOf`) live in `lib/rooms.js`, so a row, the
++// Plan and the model agree on what a room is called.
++import { roomKey, roomOf } from './rooms.js';
++import { powerTone } from './power.js';
++import { isValve, witnessOf } from './trv.js';
++import { deviceKind, powerKey } from './kinds.js';
++
++export { roomOf };
++
++const point = (d, keys) => keys.find((key) => (d?.points ?? []).some((p) => p.key === key)) ?? null;
++const value = (d, key) => (key ? (d?.state?.[key]?.value ?? null) : null);
++const has = (d, key, write = false) => (d?.points ?? []).some((p) => p.key === key && (!write || p.access?.write));
++
++/** What a device measures — a sensor in the dashboard's sense. */
++const MEASURES = ['temperature', 'temp_current', 'local_temperature', 'humidity', 'humidity_value', 'motion', 'occupancy', 'pir'];
++const isSensor = (d) => (d?.points ?? []).some((p) => MEASURES.includes(p.key));
++
++/** What a row shows as an extra state chip: no figure, just its state (the
++ *  Star Projector: `switch_led`, `work_mode`, nothing to measure). */
++const isStateDevice = (d) => has(d, 'switch_led') || has(d, 'work_mode');
++export const displayName = (d) => d?.label?.name ?? d?.native_name ?? d?.id;
++
++const kindOf = deviceKind;
++
++/** The Hue room group a light belongs to, when that group is made of lamps
++ *  only: a tap lights the whole room, together. A group that also holds a
++ *  sensor (the dressing's) is not one — up, never a mixed bag. */
++function roomGroupOf(light, devices, rooms) {
++  if (!light || kindOf(light) !== 'light') return null;
++  const room = roomKey(roomOf(light, rooms));
++  return (
++    devices.find(
++      (d) =>
++        kindOf(d) === 'group' &&
++        roomKey(roomOf(d, rooms)) === room &&
++        (d.members ?? []).length > 1 &&
++        (d.members ?? []).every((id) => kindOf(devices.find((x) => x.id === id)) === 'light'),
++    ) ?? null
++  );
++}
++
++/** The device a row commands: by id, by name (`match`, a regular expression),
++ *  or by room. `kind` narrows a name match (the VMC row commands the plug, not
++ *  the thermometer that shares its name). A lamp commands its room's Hue group
++ *  over itself: a tap lights the whole room. */
++function resolve(def, devices, rooms) {
++  if (def.id) return devices.find((d) => d.id === def.id) ?? null;
++  if (def.match) {
++    const re = new RegExp(def.match, 'i');
++    const hits = devices.filter((d) => re.test(displayName(d)) && (!def.kind || kindOf(d) === def.kind));
++    const pick = (def.group ? hits.find((d) => (d.members ?? []).length > 1) : null) ?? hits[0] ?? null;
++    return roomGroupOf(pick, devices, rooms) ?? pick;
++  }
++  if (def.room) {
++    const pool = devices.filter((d) => roomKey(roomOf(d, rooms)) === roomKey(def.room) && (!def.kind || kindOf(d) === def.kind));
++    const pick = pool.find((d) => powerKey(d) != null) ?? pool[0] ?? null;
++    return roomGroupOf(pick, devices, rooms) ?? pick;
++  }
++  return null;
++}
++
++/** Every reading a room holds, not the first sensor found: a temperature, the
++ *  humidity of whoever measures it, and the presence the room reports. A
++ *  device that only measures is never drawn for its own sake — the row carries
++ *  what its room says. Each chip names its measure and its device: two
++ *  thermometers on one row must be tellable apart without tapping. */
++function readings(inRoom, t) {
++  const out = [];
++  const figure = (keys, icon, word, format) => {
++    for (const d of inRoom) {
++      const key = point(d, keys);
++      const v = value(d, key);
++      if (typeof v !== 'number') continue;
++      const text = format(v);
++      const grand = t(word);
++      out.push({ key: `${d.id}/${key}`, icon, text, title: `${displayName(d)} · ${grand} ${text}`, label: `${grand} ${text}`, point: `${d.id}/${key}` });
++      return;
++    }
++  };
++  figure(['temperature', 'temp_current', 'local_temperature'], 'thermometer', 'maison.point.temperature', (v) => `${v.toFixed(1)}°`);
++  figure(['humidity', 'humidity_value'], 'humidity', 'maison.point.humidity', (v) => `${Math.round(v)} %`);
++  // Presence: the room's motion sensor is a pastille of its own — the icon
++  // alone, warmed when someone is there. A room that watches says so even
++  // when it is quiet (a missing chip would read as « nobody watches »). The
++  // word is « présence », not the sensor's name: the icon is not its owner.
++  const watcher = inRoom.find((d) => point(d, ['motion', 'occupancy', 'pir']));
++  const key = watcher ? point(watcher, ['motion', 'occupancy', 'pir']) : null;
++  const seen = value(watcher, key);
++  if (key) {
++    const presence = t('maison.accueil.presence');
++    out.push({ key: `presence:${watcher.id}`, icon: 'motion', text: '', tone: seen === true || seen === 'pir' ? 'warm' : '', label: presence, title: presence, point: null });
++  }
++  return out;
++}
++
++/** The valve's witness: what it is doing, in the four states a household
++ *  reads at a glance (`witnessOf`, the same one the Chauffage page uses). The
++ *  figure shown is the one whose history opens — never the setpoint under a
++ *  curve that is not its own. The words and the tooltip are the ones patch
++ *  n°8 set: a tablet has no mouse. */
++const VANNE_DOT = { heating: 'warm', idle: 'cool', off: 'off', offline: 'alert' };
++const VANNE_WORD = { heating: 'vanne_chauffe', idle: 'vanne_repos', off: 'vanne_eteinte', offline: 'vanne_hors_ligne' };
++
++function valveChip(valve, t) {
++  if (!valve) return null;
++  const w = witnessOf(valve, (_, key) => value(valve, key));
++  if (!w) return null;
++  const etat = t(`maison.accueil.${VANNE_WORD[w.state]}`);
++  const temp = w.setpoint == null ? null : `${w.setpoint.toFixed(1)}°`;
++  const measuredKey = point(valve, ['local_temperature', 'temperature']);
++  const measured = value(valve, measuredKey);
++  // A chip with no mouse must say the state: the figure when the valve heats
++  // or waits, the word when it does nothing (off, offline).
++  const talking = w.state === 'heating' || w.state === 'idle';
++  const shown = talking ? (typeof measured === 'number' ? `${measured.toFixed(1)}°` : (temp ?? etat)) : etat;
++  const title = temp ? t('maison.accueil.vanne_titre', { etat, temp }) : t('maison.accueil.vanne_titre_seule', { etat });
++  return {
++    key: `valve:${valve.id}`,
++    icon: 'radiator',
++    text: shown,
++    dot: VANNE_DOT[w.state],
++    title,
++    label: title,
++    // A valve that does nothing shows a word, not a figure: tapping what is
++    // not displayed would open a curve under a label that lies. Only the
++    // talking states (heating, waiting) open their own measurement.
++    point: talking && typeof measured === 'number' ? `${valve.id}/${measuredKey}` : null,
++  };
++}
++
++/** The row's wattage, when it watches a clamp of the Linky: `def.power` names
++ *  the point (`power_residuel`, `power_appart`). The colour follows the same
++ *  rule as the header band (`lib/power.js`), never a second palette. */
++function powerChip(def, config, read) {
++  if (!def.power) return null;
++  const linky = config?.badges?.linky ?? 'linky:linky';
++  const w = read(linky, def.power);
++  if (w == null || !Number.isFinite(Number(w))) return null;
++  return { key: `power:${def.power}`, icon: 'flash', text: `${Math.round(Math.abs(w))} W`, tone: powerTone(w) || 'cool', point: `${linky}/${def.power}` };
++}
++
++/** The fan speed a row shows, when the device it commands has one (a Hue room
++ *  never does; its lamps might). */
++function fanChip(main, list, read) {
++  const pool = [main, ...(main.members ?? []).map((id) => list.find((d) => d.id === id) ?? { id })];
++  const fan = pool.find((d) => has(d, 'fan_speed'));
++  if (!fan) return null;
++  const v = read(fan.id, 'fan_speed');
++  return typeof v === 'number' ? { key: `fan:${fan.id}`, icon: 'fan', text: `${v} %`, point: `${fan.id}/fan_speed` } : null;
++}
++
++/** The rows the tablette draws. Same order, same pairing, same icons as
++ *  `tablette.rows`: only the readings of a row change. An entry whose device
++ *  is gone is skipped (no phantom row). When nothing can be derived at all
++ *  (a hub with no labelled device yet), the configured entries are returned
++ *  as they are, so the page still draws. */
++export function deriveRows(config, devices, t = (key) => key) {
++  const defs = config?.tablette?.rows ?? [];
++  const rooms = config?.rooms ?? [];
++  const list = devices ?? [];
++  const read = (id, key) => value(list.find((d) => d.id === id), key);
++  const rows = defs.flatMap((def) => {
++    const main = resolve(def, list, rooms);
++    if (!main) return [];
++    const room = roomOf(main, rooms);
++    // The row's room is its device's room: `sensor_room` and `def.room` no
++    // longer decide what a row reads.
++    const same = (name) => list.filter((d) => roomKey(roomOf(d, rooms)) === roomKey(name));
++    // A row reads its device's room. A row whose device measures nothing (the
++    // plug that feeds the extractor, a Hue group) reads the room it is named
++    // after instead: the VMC + SDB row shows the VMC + SDB thermometer, not an
++    // empty line. Nothing is invented — that room's own sensors speak.
++    const fallback = def.room ?? def.name ?? null;
++    const own = room ? same(room) : [main];
++    const inRoom = own.some((d) => isSensor(d) && !isValve(d)) || !fallback ? own : same(fallback);
++    const named = def.valve ? list.find((d) => d.id === def.valve && roomKey(roomOf(d, rooms)) === roomKey(room)) ?? null : null;
++    const valve = named ?? inRoom.find(isValve) ?? null;
++    const sensors = inRoom.filter((d) => isSensor(d) && !isValve(d));
++    const states = inRoom.filter((d) => d !== main && isStateDevice(d));
++    const subs = [
++      valveChip(valve, t),
++      fanChip(main, list, read),
++      ...readings(sensors, t),
++      ...states.map((d) => ({ key: `state:${d.id}`, icon: 'info', text: displayName(d), label: displayName(d), title: displayName(d), point: null })),
++      powerChip(def, config, read),
++    ].filter(Boolean);
++    return [
++      {
++        key: def.id ?? def.match ?? def.room ?? def.name,
++        id: main.id,
++        label: def.nkey ? t(def.nkey) : (def.name ?? displayName(main)),
++        icon: def.icon ?? 'light',
++        level: def.level ?? null,
++        toggles: def.toggles !== false,
++        pair: def.pair === true,
++        subs,
++      },
++    ];
++  });
++  // Nothing derived yet (the hub has no device): the configured entries are
++  // drawn as they are, but shaped like a row — every one needs its own key,
++  // and Svelte refuses two alike.
++  return rows.length || list.length
++    ? rows
++    : defs.map((def, i) => ({
++        key: def.id ?? def.match ?? def.room ?? def.name ?? `row-${i}`,
++        id: null,
++        label: def.nkey ? t(def.nkey) : (def.name ?? def.room ?? ''),
++        icon: def.icon ?? 'light',
++        level: def.level ?? null,
++        toggles: def.toggles !== false,
++        pair: def.pair === true,
++        subs: [],
++      }));
++}
++
++export { kindOf };
+diff --git a/web/src/maison/lib/layout.test.js b/web/src/maison/lib/layout.test.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/layout.test.js
+@@ -0,0 +1,169 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { deriveRows } from './layout.js';
++
++const sensor = (id, room, points, state = {}) => ({ id, label: { room }, points: points.map((key) => ({ key })), state });
++const light = (id, room, name) => ({ id, label: { room, name }, points: [{ key: 'on', access: { write: true } }] });
++const valve = (id, room, state = {}) => ({ id, label: { room }, points: [{ key: 'system_mode' }, { key: 'occupied_heating_setpoint' }, { key: 'local_temperature' }, { key: 'running_state' }], state });
++const config = (rows) => ({ tablette: { rows } });
++
++const base = [light('light:salon', 'Salon', 'Salon'), sensor('sensor:temp', 'Salon', ['temperature'], { temperature: { value: 20.1 } }), sensor('sensor:motion', 'Salon', ['motion'], { motion: { value: true } })];
++
++test('one room aggregates all sensors', () => {
++  const [row] = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), base);
++  assert.deepEqual(row.subs.map((s) => s.icon), ['thermometer', 'motion']);
++});
++
++test('valve follows resolved device room, not row valve hint', () => {
++  const devices = [light('light:alicia', 'Alicia', 'Alicia'), valve('valve:alicia', 'Alicia', { occupied_heating_setpoint: { value: 18.5 }, system_mode: { value: 'auto' } }), valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 16 }, system_mode: { value: 'heat' } })];
++  const [row] = deriveRows(config([{ name: 'Alicia', match: '^alicia$', valve: 'valve:salon' }]), devices);
++  assert.equal(row.subs.find((s) => s.icon === 'radiator').point, null);
++  assert.equal(row.subs.find((s) => s.icon === 'radiator').text, '18.5°');
++});
++
++test('local_temperature is rendered and points to its history', () => {
++  const devices = [light('light:salon', 'Salon', 'Salon'), valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 16 }, system_mode: { value: 'heat' }, local_temperature: { value: 22.6 } })];
++  const [row] = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), devices);
++  assert.equal(row.subs.find((s) => s.icon === 'radiator').point, 'valve:salon/local_temperature');
++  assert.equal(row.subs.find((s) => s.icon === 'radiator').text, '22.6°');
++});
++
++test('label room wins over native room and sensor_room is ignored', () => {
++  const devices = [
++    { ...light('light:parents', 'Parents', 'Bandeau chambre'), native_room: 'Chambre' },
++    sensor('sensor:parents', 'Parents', ['temperature'], { temperature: { value: 19.6 } }),
++    sensor('sensor:chambre', 'Chambre', ['temperature'], { temperature: { value: 11.1 } }),
++  ];
++  const [row] = deriveRows(config([{ name: 'Parents', match: 'bandeau chambre', sensor_room: 'Chambre' }]), devices);
++  assert.deepEqual(row.subs.map((s) => s.text), ['19.6°']);
++});
++
++test('a room that watches shows its motion chip, warmed when someone is there', () => {
++  const idle = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), [...base.filter((d) => d.id !== 'sensor:motion'), sensor('sensor:m', 'Salon', ['motion'], { motion: { value: false } })]);
++  assert.deepEqual(idle[0].subs.filter((s) => s.icon === 'motion').map((s) => s.tone), ['']);
++  const lit = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), [...base.filter((d) => d.id !== 'sensor:motion'), sensor('sensor:m', 'Salon', ['motion'], { motion: { value: true } })]);
++  assert.deepEqual(lit[0].subs.filter((s) => s.icon === 'motion').map((s) => s.tone), ['warm']);
++});
++
++test('missing resolved device is skipped', () => {
++  assert.deepEqual(deriveRows(config([{ name: 'Absent', match: '^nope$' }]), base), []);
++});
++
++test('empty derivation falls back to tablette rows, shaped for the component', () => {
++  const rows = [{ name: 'Legacy', id: 'missing', icon: 'light' }];
++  const [row] = deriveRows(config(rows), []);
++  assert.equal(row.key, 'missing');
++  assert.equal(row.label, 'Legacy');
++  assert.equal(row.icon, 'light');
++  assert.deepEqual(row.subs, []);
++});
++
++ test('star device is an extra state chip, not a reading', () => {
++  const devices = [light('light:alicia', 'Alicia', 'Bandeau Alicia'), { id: 'star:alicia', label: { room: 'Alicia', name: 'Star Alicia' }, points: [{ key: 'switch_led' }], state: { switch_led: { value: true } } }];
++  const [row] = deriveRows(config([{ name: 'Alicia', match: 'bandeau alicia' }]), devices);
++  assert.equal(row.subs.some((s) => s.text === 'Star Alicia'), true);
++});
++
++ test('a lamp commands its room group, not itself', () => {
++  const devices = [
++    light('hue:bandeau', 'Parents', 'Bandeau chambre'),
++    light('hue:parents-lamp', 'Parents', 'Chambre parents'),
++    { id: 'hue:group', label: { room: 'Parents', name: 'Chambre' }, model: 'room', members: ['hue:bandeau', 'hue:parents-lamp'], points: [{ key: 'on', access: { write: true } }] },
++  ];
++  const [row] = deriveRows(config([{ name: 'Parents', match: '^bandeau chambre$' }]), devices);
++  assert.equal(row.id, 'hue:group');
++});
++
++ test('a group that holds a sensor is not a lamp group', () => {
++  const devices = [
++    light('hue:ext', 'Dressing', 'Extension couloir'),
++    sensor('hue:cap', 'Dressing', ['temperature'], { temperature: { value: 18 } }),
++    { id: 'hue:group', label: { room: 'Dressing', name: 'Dressing' }, model: 'room', members: ['hue:ext', 'hue:cap'], points: [{ key: 'on', access: { write: true } }] },
++  ];
++  const [row] = deriveRows(config([{ name: 'Couloir', match: 'couloir' }]), devices);
++  assert.equal(row.id, 'hue:ext');
++});
++
++test('the valve witness says what the valve is doing, not just its colour', () => {
++  const mk = (state) => [light('light:salon', 'Salon', 'Salon'), valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 18.5 }, system_mode: { value: 'heat' }, running_state: { value: state }, local_temperature: { value: 21 } })];
++  const cat = {
++    'maison.accueil.vanne_titre': 'Vanne : {etat} · consigne {temp}',
++    'maison.accueil.vanne_titre_seule': 'Vanne : {etat}',
++    'maison.accueil.vanne_chauffe': 'chauffe',
++    'maison.accueil.vanne_repos': 'au repos',
++    'maison.accueil.vanne_eteinte': 'éteinte',
++    'maison.accueil.vanne_hors_ligne': 'hors ligne',
++  };
++  const tt = (key, vars) => {
++    let s = cat[key] ?? key;
++    for (const [k, v] of Object.entries(vars ?? {})) s = s.replace(`{${k}}`, v);
++    return s;
++  };
++  const heating = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), mk('heat'), tt)[0].subs.find((s) => s.icon === 'radiator');
++  const idle = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), mk('idle'), tt)[0].subs.find((s) => s.icon === 'radiator');
++  assert.notEqual(heating.dot, idle.dot);
++  assert.equal(heating.dot, 'warm');
++  assert.equal(idle.dot, 'cool');
++  assert.match(heating.title, /18\.5/);
++  assert.ok(heating.label);
++});
++
++test('an off valve states the word, because a tablet has no tooltip', () => {
++  const devices = [light('light:salon', 'Salon', 'Salon'), valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 16 }, system_mode: { value: 'off' }, local_temperature: { value: 19 } })];
++  const chip = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), devices, (k) => k)[0].subs.find((s) => s.icon === 'radiator');
++  assert.equal(chip.dot, 'off');
++  assert.equal(chip.text, 'maison.accueil.vanne_eteinte');
++  assert.equal(chip.point, null);
++});
++
++test('two thermometers on one row can be told apart', () => {
++  const devices = [
++    light('light:salon', 'Salon', 'Salon'),
++    sensor('sensor:poele', 'Salon', ['temperature'], { temperature: { value: 27.7 } }),
++    valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 18.5 }, system_mode: { value: 'heat' }, local_temperature: { value: 22.6 } }),
++  ];
++  const subs = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), devices, (k) => k)[0].subs;
++  const temps = subs.filter((s) => s.icon === 'thermometer');
++  assert.equal(temps.length, 1);
++  assert.match(temps[0].title, /sensor:poele|Capteur|salon/i);
++  const presence = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), [...devices, sensor('sensor:m', 'Salon', ['motion'], { motion: { value: false } })], (k) => k)[0].subs.find((s) => s.icon === 'motion');
++  assert.equal(presence.label, 'maison.accueil.presence');
++});
++
++ test('multiple rows keep configured order and pair flags', () => {
++  const rows = deriveRows(config([{ name: 'Salon', match: '^salon$', pair: true }, { name: 'Alicia', match: '^alicia$', pair: true }]), base.concat(light('light:alicia', 'Alicia', 'Alicia')));
++  assert.deepEqual(rows.map((r) => [r.label, r.pair]), [['Salon', true], ['Alicia', true]]);
++});
++
++test('every chip on a row has its own key, so Svelte never sees two alike', () => {
++  const devices = [
++    light('light:salon', 'Salon', 'Salon'),
++    sensor('sensor:a', 'Salon', ['temperature', 'humidity'], { temperature: { value: 20 }, humidity: { value: 55 } }),
++    sensor('sensor:b', 'Salon', ['temperature'], { temperature: { value: 20 } }),
++    sensor('sensor:m', 'Salon', ['motion'], { motion: { value: true } }),
++    valve('valve:salon', 'Salon', { occupied_heating_setpoint: { value: 18.5 }, system_mode: { value: 'heat' }, local_temperature: { value: 22.6 } }),
++  ];
++  const subs = deriveRows(config([{ name: 'Salon', match: '^salon$' }]), devices, (k) => k)[0].subs;
++  const keys = subs.map((s) => s.key);
++  assert.equal(keys.filter(Boolean).length, keys.length);
++  assert.equal(new Set(keys).size, keys.length);
++});
++
++test('an empty hub still draws the configured rows, each with its own key', () => {
++  const rows = deriveRows(config([{ name: 'Salon', match: '^salon$' }, { name: 'Chambre', room: 'Chambre' }]), []);
++  assert.equal(rows.length, 2);
++  assert.deepEqual(rows.map((r) => r.key), ['^salon$', 'Chambre']);
++  assert.ok(rows.every((r) => r.subs.length === 0));
++});
++
++test('a room alias names the same room as the layout does', () => {
++  const cfg = { ...config([{ name: 'Cave', match: '^cave$' }]), rooms: [{ name: 'Cave à Vins', aliases: ['Cave'] }] };
++  const devices = [light('light:cave', 'Cave', 'Cave'), sensor('sensor:cave', 'Cave à Vins', ['temperature'], { temperature: { value: 12.4 } })];
++  const [row] = deriveRows(cfg, devices);
++  assert.deepEqual(row.subs.map((s) => s.text), ['12.4°']);
++});
++
++test('a row label made of an i18n key is translated', () => {
++  const [row] = deriveRows(config([{ nkey: 'salon.titre', match: '^salon$' }]), base, (k) => (k === 'salon.titre' ? 'Le salon' : k));
++  assert.equal(row.label, 'Le salon');
++});
+diff --git a/web/src/maison/lib/kinds.js b/web/src/maison/lib/kinds.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/kinds.js
+@@ -0,0 +1,78 @@
++// What a device is, reduced to what needs no hub and no Svelte: the power
++// point, the name classifiers and the two bridge shapes. `home.svelte.js`
++// (`deviceKind`) and `layout.js` (`kindOf`) read the same rules here, so a
++// device cannot be a `tv` for a row and a `sensor` for the Plan.
++//
++// Dependency-free on purpose: no runes, no hub — `node --test` loads it.
++
++import { VALVE_KEYS } from './trv.js';
++
++const pointHas = (d, key, write = false) =>
++  (d?.points ?? []).some((p) => p.key === key && (!write || p.access?.write));
++
++/** The point that switches a device on and off. */
++export function powerKey(d) {
++  if (!d?.points) return null;
++  const writable = d.points.filter((p) => p.access?.write);
++  const p =
++    writable.find((x) => x.semantic === 'on_off' && x.kind?.type === 'binary') ??
++    writable.find((x) => ['on', 'switch_1', 'switch', 'state'].includes(x.key));
++  return p?.key ?? null;
++}
++
++/** Names that read as a light, and on/off things that never are one. */
++export const LIGHTISH =
++  /lumi|lamp|light|spot|plafon|applique|ampoule|globe|suspension|bureau|salon|cuisine|couloir|studio|véranda|veranda|entrée|chambre|toilette|combles|meuble|bulb|ceiling|desk|kitchen|hallway|bedroom|attic|fixture|lounge/i;
++/** On/off things that are not lights, whatever their bridge calls them. */
++export const NOT_LIGHT = /vmc|ventil|pompe|prise|chauffe|\bfan\b|pump|heater|outlet|socket/i;
++export const FAN_NAME = /(^|[^a-z])(fan|ventilateur|ventilo)([^a-z]|$)/i;
++
++/** A light fixture (D12): bulbs and the relay that feeds them as one light. */
++export const isFixture = (d) => d?.model === 'Luminaire';
++/** A Hue room or zone: « toute la pièce », not a lamp. */
++export const isGroup = (d) => d?.model === 'room' || d?.model === 'zone';
++
++/** The points that make a climate device a thermostatic valve: it states its
++ *  target the ZCL way, not as Home Assistant's `target_temperature`. The
++ *  constant lives in `lib/trv.js` (with `isValve`), and is re-exported here so
++ *  both readers share one copy. */
++export { VALVE_KEYS };
++
++/** What a device is, for choosing how to show it. The one classifier: the
++ *  Accueil rows, the Plan pins and the Chauffage page all read it, so a device
++ *  cannot be a `tv` here and a `sensor` there. */
++export function deviceKind(d) {
++  if (!d) return 'unknown';
++  if (pointHas(d, 'progress') && pointHas(d, 'nozzle_temperature')) return 'printer';
++  if (d.camera) return 'camera';
++  if (pointHas(d, 'target_temperature')) return 'climate';
++  if (VALVE_KEYS.some((k) => pointHas(d, k))) return 'climate';
++  if (
++    pointHas(d, 'fan_speed') ||
++    pointHas(d, 'fan_control') ||
++    pointHas(d, 'fan_direction') ||
++    pointHas(d, 'fan_mode') ||
++    pointHas(d, 'wind_speed')
++  )
++    return 'fan';
++  if (pointHas(d, 'key', true)) return 'tv';
++  if (pointHas(d, 'playing', true) && pointHas(d, 'volume')) return 'speaker';
++  if (
++    pointHas(d, 'percent_control') ||
++    (pointHas(d, 'control', true) &&
++      d.points.find((p) => p.key === 'control')?.kind?.values?.includes('open'))
++  )
++    return 'cover';
++  if (powerKey(d)) {
++    if (isGroup(d)) return 'group';
++    if (isFixture(d)) return 'light';
++    const name = d.label?.name ?? d.native_name ?? '';
++    if (FAN_NAME.test(name)) return 'fan';
++    if (NOT_LIGHT.test(name) || /plug/i.test(d.model ?? '')) return 'plug';
++    if (String(d.id).startsWith('hue:') || LIGHTISH.test(name)) return 'light';
++    return 'plug';
++  }
++  return 'sensor';
++}
++
++export { pointHas };
+diff --git a/web/src/maison/lib/kinds.test.js b/web/src/maison/lib/kinds.test.js
+new file mode 100644
+--- /dev/null
++++ b/web/src/maison/lib/kinds.test.js
+@@ -0,0 +1,35 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { deviceKind, powerKey } from './kinds.js';
++import { deriveRows } from './layout.js';
++
++const dev = (id, points, extra = {}) => ({
++  id,
++  points: points.map((p) => (typeof p === 'string' ? { key: p } : p)),
++  ...extra,
++});
++
++test('a read-only key point does not make a device a tv', () => {
++  const d = dev('x:1', [{ key: 'key', access: { read: true } }]);
++  assert.equal(deviceKind(d), 'sensor');
++  assert.equal(deviceKind(dev('x:2', [{ key: 'key', access: { write: true } }])), 'tv');
++});
++
++test('a ZCL valve is a climate device', () => {
++  assert.equal(deviceKind(dev('x:3', ['system_mode', 'occupied_heating_setpoint'])), 'climate');
++});
++
++test('the row and the plan agree on what a device is', () => {
++  const devices = [
++    dev('light:salon', [{ key: 'on', access: { write: true } }], { label: { room: 'Salon', name: 'Salon' } }),
++    dev('x:led', [{ key: 'key', access: { read: true } }], { label: { room: 'Salon' } }),
++  ];
++  const [row] = deriveRows({ tablette: { rows: [{ name: 'Salon', match: '^salon$' }] } }, devices);
++  assert.equal(row.id, 'light:salon');
++  assert.ok(!row.subs.some((s) => s.point?.startsWith('x:led')));
++});
++
++test('powerKey needs a writable point', () => {
++  assert.equal(powerKey(dev('x:4', [{ key: 'on', access: { read: true } }])), null);
++  assert.equal(powerKey(dev('x:5', [{ key: 'on', access: { write: true } }])), 'on');
++});
+diff --git a/web/src/maison/lib/rooms.js b/web/src/maison/lib/rooms.js
+--- a/web/src/maison/lib/rooms.js
++++ b/web/src/maison/lib/rooms.js
+@@ -1,7 +1,7 @@
+ // Rooms, compared the way the household writes them: `Étage` = `etage`,
+ // `VMC  +  SDB` = `vmc + sdb`. One normalization rule for the whole
+-// dashboard — the model (`home.svelte.js`), the valve witness
+-// (`trv.js`) and the node tests all read it here.
++// dashboard — the model (`home.svelte.js`), the rows (`layout.js`), the
++// valve witness (`trv.js`) and the node tests all read it here.
+ //
+ // Dependency-free on purpose: no Svelte runes, no hub, so `node --test`
+ // can load it.
+@@ -14,3 +14,22 @@
+     .replace(/\s+/g, ' ')
+     .toLowerCase();
+ }
++
++/** The layout's name for a room called `raw` somewhere (a bridge, the plan):
++ *  `home.json`'s own name when an alias matches (« Cave » → « Cave à Vins »,
++ *  « Appart » → « Appartement »), `raw` otherwise. `rooms` is
++ *  `home.config.rooms`. */
++export function roomNamed(raw, rooms = []) {
++  const key = roomKey(raw);
++  for (const room of rooms) {
++    if ([room.name, ...(room.aliases ?? [])].some((n) => roomKey(n) === key)) return room.name;
++  }
++  return raw;
++}
++
++/** The room a device is in, by the layout's names and aliases: the
++ *  household's label first, the bridge's second. */
++export function roomOf(d, rooms = []) {
++  const raw = d?.label?.room || d?.native_room || null;
++  return raw ? roomNamed(raw, rooms) : null;
++}
+diff --git a/web/src/maison/lib/trv.js b/web/src/maison/lib/trv.js
+--- a/web/src/maison/lib/trv.js
++++ b/web/src/maison/lib/trv.js
+@@ -14,7 +14,7 @@
+ const has = (d, key) => (d?.points ?? []).some((p) => p.key === key);
+ 
+ /** A valve is a climate device that speaks the ZCL setpoint
+- *  (`deviceKind` in `home.svelte.js` reads `VALVE_KEYS` for the same reason). */
++ *  (`deviceKind`, in `lib/kinds.js`, reads the same `VALVE_KEYS`). */
+ export function isValve(d) {
+   return VALVE_KEYS.some((k) => has(d, k));
+ }
+diff --git a/web/src/maison/ui/TabletteRows.svelte b/web/src/maison/ui/TabletteRows.svelte
+--- a/web/src/maison/ui/TabletteRows.svelte
++++ b/web/src/maison/ui/TabletteRows.svelte
+@@ -11,139 +11,15 @@
+   // en lecture seule, `level` affiche un pourcentage, `power` ajoute la
+   // consommation d'une pince du Linky, `valve` nomme la vanne thermostatique
+   // dont la rangée porte le témoin (à défaut, la vanne de sa pièce).
+-  import { home, hub, value, device, nameOf, roomOf, deviceKind, tempIgnored, readingPoint } from '../lib/home.svelte.js';
+-  import { roomKey } from '../lib/rooms.js';
+-  import { powerTone } from '../lib/power.js';
++  import { home, hub } from '../lib/home.svelte.js';
+   import { t } from '../../lib/i18n.svelte.js';
+-  import { valveIn, witnessOf } from '../lib/trv.js';
++  import { deriveRows } from '../lib/layout.js';
+   import TabletteRow from './TabletteRow.svelte';
+ 
+   const devices = $derived(Object.values(hub.devices));
++  // `deriveRows` always gives every row its `subs` array: no copy needed.
++  const rows = $derived(deriveRows(home.config, devices, t));
+ 
+-  const byId = (id) => devices.find((d) => d.id === id) ?? null;
+-
+-  /** Le premier appareil de la pièce qui passe `test` (kind facultatif). */
+-  function pick(room, test, kind = null) {
+-    const inRoom = devices.filter((d) => roomKey(roomOf(d)) === roomKey(room));
+-    const pool = kind ? inRoom.filter((d) => deviceKind(d) === kind) : inRoom;
+-    return pool.find(test) ?? null;
+-  }
+-
+-  /** L'appareil d'une rangée : par identifiant, par nom, ou par pièce. */
+-  function resolve(def) {
+-    if (def.id) return byId(def.id);
+-    if (def.match) {
+-      const re = new RegExp(def.match, 'i');
+-      const hit = devices.filter((d) => re.test(nameOf(d.id)) && (!def.kind || deviceKind(d) === def.kind));
+-      // Une pièce Hue entière avant ses lampes : on commande le groupe.
+-      return (def.group ? hit.find((d) => (d.members ?? []).length > 1) : null) ?? hit[0] ?? null;
+-    }
+-    if (!def.room) return null;
+-    return pick(def.room, () => true, def.kind ?? null);
+-  }
+-
+-  /** Le capteur d'une pièce : température, et humidité quand il la sait. */
+-  function sensorOf(room) {
+-    if (!room) return null;
+-    return pick(
+-      room,
+-      (d) => {
+-        const keys = d.points.map((p) => p.key);
+-        return keys.includes('temperature') && !tempIgnored(room).has(d.id);
+-      },
+-      'sensor',
+-    );
+-  }
+-
+-  const readings = (sensor, extra = null, extraPoint = null) => {
+-    // La même règle de couleur que le bandeau d'en-tête : un wattage n'a
+-    // jamais deux couleurs sur le même écran.
+-    const watt = extra == null || !Number.isFinite(Number(extra)) ? null : [{ icon: 'flash', text: `${Math.round(Math.abs(extra))} W`, tone: powerTone(extra) || 'cool', point: extraPoint }];
+-    if (!sensor) return watt ?? [];
+-    const list = [];
+-    // La clé que l'appareil rapporte vraiment, pour ouvrir son historique.
+-    const tKey = readingPoint(sensor.id, ['temperature', 'temp_current']);
+-    const hKey = readingPoint(sensor.id, ['humidity', 'humidity_value']);
+-    const temp = tKey ? value(sensor.id, tKey) : null;
+-    const hum = hKey ? value(sensor.id, hKey) : null;
+-    if (typeof temp === 'number') list.push({ icon: 'thermometer', text: `${temp.toFixed(1)}°`, point: `${sensor.id}/${tKey}` });
+-    if (typeof hum === 'number') list.push({ icon: 'humidity', text: `${Math.round(hum)} %`, point: `${sensor.id}/${hKey}` });
+-    return [...list, ...(watt ?? [])];
+-  };
+-
+-  /** La vitesse du ventilateur d'une rangée, quand il en a une. */
+-  function fanOf(d) {
+-    if (!d) return null;
+-    const fan = [d.id, ...(d.members ?? [])].map((m) => device(m)).find((x) => x?.points.some((p) => p.key === 'fan_speed'));
+-    const v = fan ? value(fan.id, 'fan_speed') : null;
+-    return typeof v === 'number' ? { icon: 'fan', text: `${v} %`, point: `${fan.id}/fan_speed` } : null;
+-  }
+-
+-  // Les quatre états d'une vanne, chacun sa teinte de pastille : ce qu'elle
+-  // fait se lit de loin, la consigne se lit de près.
+-  const VANNE_DOT = { heating: 'warm', idle: 'cool', off: 'off', offline: 'alert' };
+-  const VANNE_WORD = { heating: 'vanne_chauffe', idle: 'vanne_repos', off: 'vanne_eteinte', offline: 'vanne_hors_ligne' };
+-
+-  /** Le témoin d'une vanne thermostatique : son état en couleur, et la
+-   *  température qu'elle **mesure** — le chiffre qu'on tape doit être celui
+-   *  dont l'historique s'ouvre. La consigne, elle, reste dans l'infobulle et
+-   *  sur la page Chauffage : c'est là qu'on la règle.
+-   *  Une pastille sans souris (une tablette) doit dire l'état : le mot quand
+-   *  la vanne ne fait rien (éteinte, hors ligne), et toujours en `aria-label`. */
+-  function witnessOfRow(def) {
+-    // Une vanne nommée mais absente (identifiant périmé) retombe sur celle de
+-    // la pièce : la rangée garde son témoin plutôt que de le perdre en silence.
+-    const valve = (def.valve ? byId(def.valve) : null) ?? valveIn(devices, def.room ?? def.sensor_room, roomOf);
+-    const w = witnessOf(valve, value);
+-    if (!w) return null;
+-    const etat = t(`maison.accueil.${VANNE_WORD[w.state]}`);
+-    const temp = w.setpoint == null ? null : `${w.setpoint.toFixed(1)}°`;
+-    const talking = w.state === 'heating' || w.state === 'idle';
+-    const title = temp ? t('maison.accueil.vanne_titre', { etat, temp }) : t('maison.accueil.vanne_titre_seule', { etat });
+-    // La température mesurée par la vanne : c'est elle qu'on lit et qu'on
+-    // interroge. À défaut, la consigne — mais alors aucun historique : ouvrir
+-    // une courbe sous un chiffre qui n'est pas elle tromperait le doigt.
+-    const mKey = valve ? readingPoint(valve.id, ['local_temperature', 'temperature']) : null;
+-    const measured = mKey ? value(valve.id, mKey) : null;
+-    const shown = talking ? (typeof measured === 'number' ? `${measured.toFixed(1)}°` : (temp ?? etat)) : etat;
+-    return {
+-      icon: 'radiator',
+-      text: shown,
+-      dot: VANNE_DOT[w.state],
+-      title,
+-      label: title,
+-      point: typeof measured === 'number' ? `${valve.id}/${mKey}` : null,
+-    };
+-  }
+-
+-  // Une rangée prête à rendre : l'appareil résolu, son nom, ses pastilles.
+-  // Une entrée introuvable (appareil absent, pièce vide) est sautée : pas
+-  // de rangée fantôme.
+-  const rows = $derived.by(() =>
+-    (home.config?.tablette?.rows ?? []).flatMap((def) => {
+-      const d = resolve(def);
+-      if (!d) return [];
+-      const linky = home.config?.badges?.linky ?? 'linky:linky';
+-      const extra = def.power ? value(linky, def.power) : null;
+-      const fan = fanOf(d);
+-      const vanne = witnessOfRow(def);
+-      const label = def.nkey ? t(def.nkey) : (def.name ?? nameOf(d.id));
+-      return [
+-        {
+-          key: def.id ?? def.match ?? def.room ?? label,
+-          id: d.id,
+-          label,
+-          icon: def.icon ?? 'light',
+-          level: def.level ?? null,
+-          toggles: def.toggles !== false,
+-          pair: def.pair === true,
+-          subs: [...(vanne ? [vanne] : []), ...(fan ? [fan] : []), ...readings(sensorOf(def.sensor_room ?? def.room), extra, def.power ? `${linky}/${def.power}` : null)],
+-        },
+-      ];
+-    }),
+-  );
+-
+-  // Les rangées consécutives marquées `pair` forment un groupe côte à côte.
+   const groups = $derived.by(() => {
+     const out = [];
+     for (const r of rows) {
+@@ -153,6 +29,7 @@
+     }
+     return out;
+   });
++
+ </script>
+ 
+ <div class="rows" aria-label={t('maison.accueil.tablette_lignes')} role="group">
+diff --git a/web/src/maison/ui/TabletteRow.svelte b/web/src/maison/ui/TabletteRow.svelte
+--- a/web/src/maison/ui/TabletteRow.svelte
++++ b/web/src/maison/ui/TabletteRow.svelte
+@@ -57,7 +57,7 @@
+   {/if}
+ 
+   <span class="subs">
+-    {#each subs as s (s.icon + s.text)}
++    {#each subs as s (s.key)}
+       {#if s.point}
+         <button class="sub {s.tone ?? ''} live" title={s.title ?? s.text} aria-label={historyLabel(s.point, s.text)} onclick={() => openHistory(s.point)}>
+           <Icon name={s.icon} size={13} />{s.text}{#if s.dot != null}<i class="dot {s.dot}" aria-hidden="true"></i>{/if}
+diff --git a/web/src/maison/lib/home.svelte.js b/web/src/maison/lib/home.svelte.js
+--- a/web/src/maison/lib/home.svelte.js
++++ b/web/src/maison/lib/home.svelte.js
+@@ -1,13 +1,12 @@
+ // The family dashboard's model: the hub's live state (SSE, shared with the
+ // Atelier), the home layout (/api/home), and gentle helpers on top.
+ 
+-import { hub, connect, login, decide, refreshSession } from '../../lib/hub.svelte.js';
++import { hub, connect, login, decide, refreshSession, onHubEvent } from '../../lib/hub.svelte.js';
+ import { t, locale } from '../../lib/i18n.svelte.js';
++import { roomKey, roomNamed as roomNamedIn, roomOf as roomOfIn } from './rooms.js';
++import { powerKey, isFixture, isGroup, pointHas, deviceKind } from './kinds.js';
+ 
+-import { roomKey } from './rooms.js';
+-import { VALVE_KEYS } from './trv.js';
+-
+-export { hub, roomKey };
++export { hub, roomKey, powerKey, isFixture, isGroup, deviceKind };
+ 
+ export const home = $state({
+   /** @type {any} layout from /api/home ({} = automatic) */
+@@ -40,19 +39,35 @@
+ }
+ 
+ let started = false;
++let reloadTimer = null;
++
++async function loadHome() {
++  try {
++    const res = await fetch('/api/home', { cache: 'no-store' });
++    home.config = res.ok ? await res.json() : {};
++  } catch {
++    home.config = {};
++  }
++}
++
++function scheduleHomeReload() {
++  if (reloadTimer != null) return;
++  reloadTimer = setTimeout(async () => {
++    reloadTimer = null;
++    await loadHome();
++  }, 50);
++}
+ 
+ /** Starts the live link (once) and loads the layout. */
+ export async function start() {
+   if (started) return;
+   started = true;
+   connect();
++  onHubEvent((event) => {
++    if (event.type === 'label_changed' || event.type === 'snapshot') scheduleHomeReload();
++  });
+   setInterval(() => (home.now = Date.now()), 15_000);
+-  try {
+-    const res = await fetch('/api/home');
+-    home.config = res.ok ? await res.json() : {};
+-  } catch {
+-    home.config = {};
+-  }
++  await loadHome();
+ }
+ 
+ export function note(text, tone = 'info') {
+@@ -177,16 +192,6 @@
+   return spec?.label || key || spec?.key || '';
+ }
+ 
+-/** The point that switches the device on and off. */
+-export function powerKey(d) {
+-  if (!d) return null;
+-  const writable = d.points.filter((p) => p.access?.write);
+-  const p =
+-    writable.find((p) => p.semantic === 'on_off' && p.kind.type === 'binary') ??
+-    writable.find((p) => ['on', 'switch_1', 'switch', 'state'].includes(p.key));
+-  return p?.key ?? null;
+-}
+-
+ const truthy = (v) => v === true || v === 'ON' || v === 'on' || v === 1;
+ 
+ /** Really on, now. An unreachable device is not (a bulb cut at the wall
+@@ -200,11 +205,6 @@
+   return key ? truthy(value(id, key)) : false;
+ }
+ 
+-/** A light fixture (D12): bulbs and the relay that feeds them as one light. */
+-export const isFixture = (d) => d?.model === 'Luminaire';
+-/** A Hue room or zone: « toute la pièce », not a lamp. */
+-export const isGroup = (d) => d?.model === 'room' || d?.model === 'zone';
+-
+ /** The fixture a device belongs to (its bulbs, its relay), if any. */
+ export function fixtureOf(id) {
+   for (const d of Object.values(hub.devices)) if (isFixture(d) && d.members?.includes(id)) return d;
+@@ -229,12 +229,10 @@
+ // `norm` is the dashboard's one room-name comparison (`lib/rooms.js`).
+ const norm = roomKey;
+ 
+-/** The layout's name for a room called `raw` somewhere (a bridge, the plan). */
++/** The layout's name for a room called `raw` somewhere (a bridge, the plan):
++ *  the rule lives in `lib/rooms.js`, so the rows read the same one. */
+ export function roomNamed(raw) {
+-  for (const room of home.config?.rooms ?? []) {
+-    if ([room.name, ...(room.aliases ?? [])].some((n) => norm(n) === norm(raw))) return room.name;
+-  }
+-  return raw;
++  return roomNamedIn(raw, home.config?.rooms ?? []);
+ }
+ 
+ export function tempIgnored(roomName) {
+@@ -244,8 +242,7 @@
+ 
+ /** The room a device is in, by the layout's names and aliases. */
+ export function roomOf(d) {
+-  const raw = d?.label?.room || d?.native_room;
+-  return raw ? roomNamed(raw) : null;
++  return roomOfIn(d, home.config?.rooms ?? []);
+ }
+ 
+ export const protectedRoom = (name) =>
+@@ -276,47 +273,13 @@
+     .map(([key, name]) => ({ key, name }));
+ }
+ 
+-const LIGHTISH = /lumi|lamp|light|spot|plafon|applique|ampoule|globe|suspension|bureau|salon|cuisine|couloir|studio|véranda|veranda|entrée|chambre|toilette|combles|meuble|bulb|ceiling|desk|kitchen|hallway|bedroom|attic|fixture|lounge/i;
+-/** On/off things that are not lights, whatever their bridge calls them. */
+-const NOT_LIGHT = /vmc|ventil|pompe|prise|chauffe|\bfan\b|pump|heater|outlet|socket/i;
+-const FAN_NAME = /(^|[^a-z])(fan|ventilateur|ventilo)([^a-z]|$)/i;
+ const has = (d, key, write = false) => d.points.some((p) => p.key === key && (!write || p.access?.write));
+ 
+ /** What a device is, for choosing how to show it. */
+-export function deviceKind(d) {
+-  if (!d) return 'unknown';
+-  if (has(d, 'progress') && has(d, 'nozzle_temperature')) return 'printer';
+-  if (d.camera) return 'camera';
+-  if (has(d, 'target_temperature')) return 'climate';
+-  // A thermostatic valve states its setpoint the ZCL way: no
+-  // `target_temperature`, but a `system_mode` and an
+-  // `occupied_heating_setpoint` (`VALVE_KEYS`). It heats, so it is a climate
+-  // device.
+-  if (VALVE_KEYS.some((k) => has(d, k))) return 'climate';
+-  // A fan turns blades: the Tuya ceiling fan says so with `fan_speed` and
+-  // friends. What a plain plug feeds is unknown to Moli — a plug is only a
+-  // fan when its name says so (the stove fan is one).
+-  if (has(d, 'fan_speed') || has(d, 'fan_control') || has(d, 'fan_direction') || has(d, 'fan_mode') || has(d, 'wind_speed')) return 'fan';
+-  if (has(d, 'key', true)) return 'tv';
+-  if (has(d, 'playing', true) && has(d, 'volume')) return 'speaker';
+-  if (has(d, 'percent_control') || (has(d, 'control', true) && d.points.find((p) => p.key === 'control')?.kind.values?.includes('open')))
+-    return 'cover';
+-  if (powerKey(d)) {
+-    if (isGroup(d)) return 'group';
+-    if (isFixture(d)) return 'light';
+-    const name = d.label?.name || d.native_name;
+-    if (FAN_NAME.test(name)) return 'fan';
+-    if (NOT_LIGHT.test(name) || /plug/i.test(d.model ?? '')) return 'plug';
+-    if (d.id.startsWith('hue:') || LIGHTISH.test(name)) return 'light';
+-    return 'plug';
+-  }
+-  return 'sensor';
+-}
+ 
+ // ---- the plan -------------------------------------------------------------------
+ 
+ const PIN_ICON = { light: 'light', group: 'light-group', plug: 'power', fan: 'fan', climate: 'air-conditioner', camera: 'cctv', speaker: 'speaker', tv: 'tv', cover: 'shutter' };
+-const pointHas = (d, key) => d.points.some((p) => p.key === key);
+ 
+ /** The icon a plan pin (or a token on the Plan page) shows for a device. */
+ export function pinIcon(d) {
+diff --git a/web/src/lib/hub.svelte.js b/web/src/lib/hub.svelte.js
+--- a/web/src/lib/hub.svelte.js
++++ b/web/src/lib/hub.svelte.js
+@@ -35,6 +35,16 @@
+ });
+ 
+ const JOURNAL_MAX = 60;
++const eventListeners = new Set();
++
++export function onHubEvent(listener) {
++  eventListeners.add(listener);
++  return () => eventListeners.delete(listener);
++}
++
++function notifyEvent(e) {
++  for (const listener of eventListeners) listener(e);
++}
+ 
+ function applySnapshot(snapshot) {
+   const devices = {};
+@@ -51,6 +61,7 @@
+ }
+ 
+ function applyEvent(e) {
++  notifyEvent(e);
+   switch (e.type) {
+     case 'device_upserted': {
+       const prev = hub.devices[e.device.id];
+@@ -130,6 +141,7 @@
+   // Every snapshot (first connection, reconnection, catch-up after lag)
+   // may follow a gap: reload the journal too.
+   source.addEventListener('snapshot', (m) => {
++    notifyEvent({ type: 'snapshot' });
+     hub.connected = true;
+     applySnapshot(JSON.parse(m.data));
+     loadJournal();
+diff --git a/web/src/maison/pages/Chauffage.svelte b/web/src/maison/pages/Chauffage.svelte
+--- a/web/src/maison/pages/Chauffage.svelte
++++ b/web/src/maison/pages/Chauffage.svelte
+@@ -41,28 +41,28 @@
+   async function applyPreset(name) {
+     const p = presets[name];
+     if (!p) return;
+-    if (p.mode === 'off' && !confirm(t('chauffage.preset_confirmer', { mode: presetName(name), n: valves.length }))) return;
++    if (p.mode === 'off' && !confirm(t('maison.chauffage.preset_confirmer', { mode: presetName(name), n: valves.length }))) return;
+     for (const d of valves) {
+-      await act(`${d.id}/system_mode`, p.mode, t('chauffage.preset_action', { mode: presetName(name) }));
+-      if (p.setpoint != null) await act(`${d.id}/occupied_heating_setpoint`, p.setpoint, t('chauffage.preset_action', { mode: presetName(name) }));
++      await act(`${d.id}/system_mode`, p.mode, t('maison.chauffage.preset_action', { mode: presetName(name) }));
++      if (p.setpoint != null) await act(`${d.id}/occupied_heating_setpoint`, p.setpoint, t('maison.chauffage.preset_action', { mode: presetName(name) }));
+     }
+-    applied = t('chauffage.preset_fait', { mode: presetName(name) });
++    applied = t('maison.chauffage.preset_fait', { mode: presetName(name) });
+     setTimeout(() => (applied = null), 6000);
+   }
+ </script>
+ 
+ <div class="chauffage">
+   <header>
+-    <h1 class="page-title">{t('chauffage.titre')}</h1>
+-    <p class="page-sub">{t('chauffage.sous_titre')}</p>
++    <h1 class="page-title">{t('maison.chauffage.titre')}</h1>
++    <p class="page-sub">{t('maison.chauffage.sous_titre')}</p>
+   </header>
+ 
+   {#if valves.length}
+     <section class="presets" aria-label={t('maison.accueil.mode_maison')}>
+-      <span class="lbl"><Icon name="fire" size={15} />{t('chauffage.presets')}</span>
++      <span class="lbl"><Icon name="fire" size={15} />{t('maison.chauffage.presets')}</span>
+       <div class="row" role="group">
+         {#each order as k (k)}
+-          <button onclick={() => applyPreset(k)} disabled={busy} title={t('chauffage.preset_appliquer', { mode: presetName(k) })}>
++          <button onclick={() => applyPreset(k)} disabled={busy} title={t('maison.chauffage.preset_appliquer', { mode: presetName(k) })}>
+             <Icon name={PRESET_ICON[k] ?? 'home'} size={15} />{presetName(k)}{#if presets[k].setpoint != null}<small class="num">{presets[k].setpoint}°</small>{/if}
+           </button>
+         {/each}
+@@ -78,7 +78,7 @@
+   {:else}
+     <section class="card empty">
+       <Icon name="radiator" size={26} />
+-      <p>{t('chauffage.aucune')}</p>
++      <p>{t('maison.chauffage.aucune')}</p>
+     </section>
+   {/if}
+ </div>
+diff --git a/web/src/maison/ui/ValveCard.svelte b/web/src/maison/ui/ValveCard.svelte
+--- a/web/src/maison/ui/ValveCard.svelte
++++ b/web/src/maison/ui/ValveCard.svelte
+@@ -57,15 +57,15 @@
+   let neutralizing = $state(false);
+   let done = $state(null);
+ 
+-  const stepDeg = (dir) => act(`${id}/occupied_heating_setpoint`, Math.round(((setpoint ?? 16) + dir * 0.5) * 2) / 2, t('chauffage.consigne_action', { name: nameOf(id) }));
+-  const setMode = (m) => act(`${id}/system_mode`, m, t('chauffage.mode_action', { name: nameOf(id) }));
++  const stepDeg = (dir) => act(`${id}/occupied_heating_setpoint`, Math.round(((setpoint ?? 16) + dir * 0.5) * 2) / 2, t('maison.chauffage.consigne_action', { name: nameOf(id) }));
++  const setMode = (m) => act(`${id}/system_mode`, m, t('maison.chauffage.mode_action', { name: nameOf(id) }));
+ 
+   // A quick setpoint only writes the setpoint: `system_mode` stays `auto`, so
+   // the valve's own « override until the next step » rule applies.
+-  const hold = (deg) => act(`${id}/occupied_heating_setpoint`, deg, t('chauffage.consigne_action', { name: nameOf(id) }));
++  const hold = (deg) => act(`${id}/occupied_heating_setpoint`, deg, t('maison.chauffage.consigne_action', { name: nameOf(id) }));
+ 
+   async function saveDays(list) {
+-    for (const d of list) await act(`${id}/weekly_schedule_${d.day}`, d.text, t('chauffage.table.envoi_jour', { jour: t(`chauffage.jour.${d.day}`) }));
++    for (const d of list) await act(`${id}/weekly_schedule_${d.day}`, d.text, t('maison.chauffage.table.envoi_jour', { jour: t(`maison.chauffage.jour.${d.day}`) }));
+   }
+ 
+   /** Flattens every day to one constant step: what stops an old timetable
+@@ -76,11 +76,11 @@
+     const daysToWrite = days.filter((d) => !isFlat(parseSchedule(d.text ?? '')) || d.text !== text);
+     if (!daysToWrite.length) return;
+     // Up to seven writes on a battery valve: ask once, then say what happened.
+-    if (!confirm(t('chauffage.neutraliser_confirmer', { n: daysToWrite.length, deg }))) return;
++    if (!confirm(t('maison.chauffage.neutraliser_confirmer', { n: daysToWrite.length, deg }))) return;
+     neutralizing = true;
+     try {
+       await saveDays(daysToWrite.map((d) => ({ day: d.day, text })));
+-      done = t('chauffage.neutraliser_fait');
++      done = t('maison.chauffage.neutraliser_fait');
+     } finally {
+       neutralizing = false;
+       setTimeout(() => (done = null), 6000);
+@@ -92,56 +92,56 @@
+   <header>
+     <h3><Icon name="radiator" size={18} />{nameOf(id)}</h3>
+     {#if local != null}
+-      <button class="room num live" title={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('chauffage.piece')}` })} aria-label={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('chauffage.piece')}` })} onclick={() => historyOf(id, 'local_temperature')}>{Math.round(Number(local))}°</button>
++      <button class="room num live" title={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('maison.chauffage.piece')}` })} aria-label={t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t('maison.chauffage.piece')}` })} onclick={() => historyOf(id, 'local_temperature')}>{Math.round(Number(local))}°</button>
+     {:else}
+-      <span class="room num" title={t('chauffage.piece')}>—</span>
++      <span class="room num" title={t('maison.chauffage.piece')}>—</span>
+     {/if}
+     {#if low}
+-      <span class="warn" title={t('chauffage.pile_basse', { pct: battery })}><Icon name="alert" size={15} />{battery} %</span>
++      <span class="warn" title={t('maison.chauffage.pile_basse', { pct: battery })}><Icon name="alert" size={15} />{battery} %</span>
+     {/if}
+-    {#if !online}<span class="muted small">{t('chauffage.hors_ligne')}</span>{/if}
++    {#if !online}<span class="muted small">{t('maison.chauffage.hors_ligne')}</span>{/if}
+   </header>
+ 
+-  <div class="who" role="radiogroup" aria-label={t('chauffage.qui_pilote')}>
++  <div class="who" role="radiogroup" aria-label={t('maison.chauffage.qui_pilote')}>
+     <button role="radio" aria-checked={autoRun} class:on={autoRun} disabled={busy} onclick={() => setMode('auto')}>
+-      <Icon name="clock" size={15} />{t('chauffage.table_titre')}
++      <Icon name="clock" size={15} />{t('maison.chauffage.table_titre')}
+     </button>
+     <button role="radio" aria-checked={managed} class:on={managed} disabled={busy} onclick={() => setMode('heat')}>
+-      <Icon name="robot" size={15} />{t('chauffage.automatisations')}
++      <Icon name="robot" size={15} />{t('maison.chauffage.automatisations')}
+     </button>
+     <button role="radio" aria-checked={shut} class:on={shut} class:shut disabled={busy} onclick={() => setMode('off')}>
+-      <Icon name="power" size={15} />{t('chauffage.mode_off_titre')}
++      <Icon name="power" size={15} />{t('maison.chauffage.mode_off_titre')}
+     </button>
+   </div>
+   <p class="hint">
+-    {autoRun ? t('chauffage.hint_auto') : managed ? t('chauffage.hint_auto_off') : t('chauffage.hint_off')}
+-    {#if managed}<a href="#/automatismes">{t('chauffage.vers_automatismes')}</a>{:else if shut}<button class="relight" onclick={() => setMode('auto')}>{t('chauffage.rallumer')}</button>{/if}
++    {autoRun ? t('maison.chauffage.hint_auto') : managed ? t('maison.chauffage.hint_auto_off') : t('maison.chauffage.hint_off')}
++    {#if managed}<a href="#/automatismes">{t('maison.chauffage.vers_automatismes')}</a>{:else if shut}<button class="relight" onclick={() => setMode('auto')}>{t('maison.chauffage.rallumer')}</button>{/if}
+   </p>
+ 
+-  <div class="setpoint" role="group" aria-label={t('chauffage.consigne')}>
++  <div class="setpoint" role="group" aria-label={t('maison.chauffage.consigne')}>
+     <button onclick={() => stepDeg(-1)} disabled={busy || setpoint <= 4} aria-label={t('commun.clim.moins_chaud')}>−</button>
+     <b class="num">{setpoint != null ? `${setpoint}°` : '—'}</b>
+     <button onclick={() => stepDeg(1)} disabled={busy || setpoint >= 35} aria-label={t('commun.clim.plus_chaud')}>+</button>
+-    <span class="state">{t('chauffage.mode_' + (mode ?? 'inconnu'))}</span>
+-    {#if running === 'heat'}<span class="chip warm">{t('chauffage.chauffe')}</span>{:else}<span class="chip">{t('chauffage.repos')}</span>{/if}
+-    {#if open != null}<span class="muted small">{t('chauffage.ouverture', { pct: open })}</span>{/if}
+-    {#if quality != null}<span class="muted small">{t('chauffage.signal', { lqi: quality })}</span>{/if}
++    <span class="state">{t('maison.chauffage.mode_' + (mode ?? 'inconnu'))}</span>
++    {#if running === 'heat'}<span class="chip warm">{t('maison.chauffage.chauffe')}</span>{:else}<span class="chip">{t('maison.chauffage.repos')}</span>{/if}
++    {#if open != null}<span class="muted small">{t('maison.chauffage.ouverture', { pct: open })}</span>{/if}
++    {#if quality != null}<span class="muted small">{t('maison.chauffage.signal', { lqi: quality })}</span>{/if}
+   </div>
+ 
+-  <div class="quick" role="group" aria-label={t('chauffage.consignes_rapides')}>
+-    <button class:on={near(setpoint, confort)} disabled={busy || !!soon} onclick={() => hold(confort)} title={soon ? t('chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('chauffage.consigne_action', { name: nameOf(id) })}>
++  <div class="quick" role="group" aria-label={t('maison.chauffage.consignes_rapides')}>
++    <button class:on={near(setpoint, confort)} disabled={busy || !!soon} onclick={() => hold(confort)} title={soon ? t('maison.chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('maison.chauffage.consigne_action', { name: nameOf(id) })}>
+       {t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
+     </button>
+-    <button class:on={near(setpoint, reduit)} disabled={busy || !!soon} onclick={() => hold(reduit)} title={soon ? t('chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('chauffage.consigne_action', { name: nameOf(id) })}>
++    <button class:on={near(setpoint, reduit)} disabled={busy || !!soon} onclick={() => hold(reduit)} title={soon ? t('maison.chauffage.palier_proche', { heure: hhmm(soon.min) }) : t('maison.chauffage.consigne_action', { name: nameOf(id) })}>
+       {t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
+     </button>
+-    {#if soon}<span class="muted small">{t('chauffage.palier_proche', { heure: hhmm(soon.min) })}</span>{/if}
++    {#if soon}<span class="muted small">{t('maison.chauffage.palier_proche', { heure: hhmm(soon.min) })}</span>{/if}
+   </div>
+ 
+   {#if managed && hasSchedule}
+     <div class="neutral">
+-      <button onclick={neutralizeAll} disabled={busy || neutralizing} title={t('chauffage.neutraliser_aide')}>
+-        <Icon name="undo" size={15} />{neutralizing ? t('chauffage.table.envoi') : t('chauffage.neutraliser')}
++      <button onclick={neutralizeAll} disabled={busy || neutralizing} title={t('maison.chauffage.neutraliser_aide')}>
++        <Icon name="undo" size={15} />{neutralizing ? t('maison.chauffage.table.envoi') : t('maison.chauffage.neutraliser')}
+       </button>
+       {#if done}<span class="muted small">{done}</span>{/if}
+     </div>
+@@ -157,7 +157,7 @@
+       {reduit}
+     />
+   {:else}
+-    <p class="muted small">{t('chauffage.table_absente')}</p>
++    <p class="muted small">{t('maison.chauffage.table_absente')}</p>
+   {/if}
+ </section>
+ 
+diff --git a/web/src/maison/ui/ScheduleEditor.svelte b/web/src/maison/ui/ScheduleEditor.svelte
+--- a/web/src/maison/ui/ScheduleEditor.svelte
++++ b/web/src/maison/ui/ScheduleEditor.svelte
+@@ -108,7 +108,7 @@
+    *  « custom » is new. */
+   const levelName = (deg) => {
+     const l = level(deg);
+-    return l === 'custom' ? t('chauffage.niveau.custom') : t(`maison.accueil.chauffage_${l}`);
++    return l === 'custom' ? t('maison.chauffage.niveau.custom') : t(`maison.accueil.chauffage_${l}`);
+   };
+   /** Keyboard selection: a focused step answers Enter/Space like a click, so
+    *  a step can be chosen without a pointer. */
+@@ -261,7 +261,7 @@
+       const gaveUp = Date.now() > until;
+       if (!answered && !gaveUp) continue;
+       delete nextAwaiting[day];
+-      if (formatSchedule(parseSchedule(now)) !== sent) nextRewritten[day] = now || t('chauffage.table.vide');
++      if (formatSchedule(parseSchedule(now)) !== sent) nextRewritten[day] = now || t('maison.chauffage.table.vide');
+       settled = true;
+     }
+     if (!settled) return;
+@@ -271,7 +271,7 @@
+ </script>
+ 
+ {#if !days.length}
+-  <p class="muted">{t('chauffage.table.vide')}</p>
++  <p class="muted">{t('maison.chauffage.table.vide')}</p>
+ {:else}
+   <div class="week" class:ro={readOnly} bind:this={weekEl}>
+     <div class="scale" class:ro={readOnly} aria-hidden="true">
+@@ -287,8 +287,8 @@
+       <div class="day">
+         <div class="row" class:ro={readOnly}>
+           <span class="name" class:wait={awaiting[day]}>
+-            {t(`chauffage.jour.${day}`)}
+-            {#if awaiting[day]}<small title={t('chauffage.en_attente')}>…</small>{/if}
++            {t(`maison.chauffage.jour.${day}`)}
++            {#if awaiting[day]}<small title={t('maison.chauffage.en_attente')}>…</small>{/if}
+           </span>
+           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+           <div
+@@ -296,7 +296,7 @@
+             onkeydown={(e) => addByKey(di, e)}
+             role={readOnly ? undefined : 'button'}
+             tabindex={readOnly ? undefined : 0}
+-            aria-label={t('chauffage.table.piste')}>
++            aria-label={t('maison.chauffage.table.piste')}>
+             {#each blocksOf(di) as b, bi (b.min)}
+               {@const end = blocksOf(di)[bi + 1]?.min ?? 1440}
+               <button
+@@ -311,7 +311,7 @@
+                 aria-pressed={readOnly ? undefined : selected?.day === di && selected?.index === bi}
+                 aria-disabled={readOnly || undefined}
+                 title="{hhmm(b.min)} · {b.deg}° · {levelName(b.deg)}"
+-                aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°">
++                aria-label="{t('maison.chauffage.table.palier')} {hhmm(b.min)} {b.deg}°">
+                 <em class="num">{#if fit(b, end) === 'time'}{hhmm(b.min)} ·&nbsp;{/if}{#if fit(b, end) !== 'none'}{b.deg}°{/if}</em>
+               </button>
+               <button
+@@ -322,7 +322,7 @@
+                 disabled={readOnly || bi === 0}
+                 onpointerdown={(e) => dragStart(di, bi, e)}
+                 title="{hhmm(b.min)} · {b.deg}°"
+-                aria-label="{t('chauffage.table.palier')} {hhmm(b.min)} {b.deg}°"></button>
++                aria-label="{t('maison.chauffage.table.palier')} {hhmm(b.min)} {b.deg}°"></button>
+             {/each}
+             <span class="now" style:left="{(nowMin / 1440) * 100}%"></span>
+           </div>
+@@ -332,18 +332,18 @@
+                 class="add"
+                 onclick={() => addZone(di)}
+                 disabled={full(di)}
+-                title={full(di) ? t('chauffage.table.paliers', { n: MAX_BLOCKS }) : t('chauffage.table.ajouter')}
+-                aria-label={t('chauffage.table.ajouter')}><Icon name="plus" size={15} /></button>
+-              <button onclick={() => flat(di)} title={t('chauffage.table.aplatir')} aria-label={t('chauffage.table.aplatir')}><Icon name="undo" size={14} /></button>
+-              <button onclick={() => applyAll(di)} title={t('chauffage.table.tous')} aria-label={t('chauffage.table.tous')}><Icon name="copy" size={14} /></button>
++                title={full(di) ? t('maison.chauffage.table.paliers', { n: MAX_BLOCKS }) : t('maison.chauffage.table.ajouter')}
++                aria-label={t('maison.chauffage.table.ajouter')}><Icon name="plus" size={15} /></button>
++              <button onclick={() => flat(di)} title={t('maison.chauffage.table.aplatir')} aria-label={t('maison.chauffage.table.aplatir')}><Icon name="undo" size={14} /></button>
++              <button onclick={() => applyAll(di)} title={t('maison.chauffage.table.tous')} aria-label={t('maison.chauffage.table.tous')}><Icon name="copy" size={14} /></button>
+             </div>
+           {/if}
+         </div>
+ 
+         {#if sel && sel.day === di && !readOnly}
+           {@const b = draft[sel.day]?.[sel.index]}
+-          <div class="edit" role="group" aria-label={t('chauffage.table.consigne')}>
+-            <span>{t(`chauffage.jour.${DAYS[sel.day]}`)} · <b class="num">{hhmm(b.min)}</b></span>
++          <div class="edit" role="group" aria-label={t('maison.chauffage.table.consigne')}>
++            <span>{t(`maison.chauffage.jour.${DAYS[sel.day]}`)} · <b class="num">{hhmm(b.min)}</b></span>
+             <div class="levels">
+               <button class:on={level(b.deg) === 'confort'} onclick={() => setDeg(sel.day, sel.index, confort)}>
+                 {t('maison.accueil.chauffage_confort')}<small class="num">{confort}°</small>
+@@ -351,15 +351,15 @@
+               <button class:on={level(b.deg) === 'reduit'} onclick={() => setDeg(sel.day, sel.index, reduit)}>
+                 {t('maison.accueil.chauffage_reduit')}<small class="num">{reduit}°</small>
+               </button>
+-              <span class="level" class:on={level(b.deg) === 'custom'}>{t('chauffage.niveau.custom')}</span>
++              <span class="level" class:on={level(b.deg) === 'custom'}>{t('maison.chauffage.niveau.custom')}</span>
+             </div>
+             <div class="stepper">
+               <button onclick={() => step(sel.day, sel.index, -1)} disabled={b.deg <= MIN_DEG} aria-label={t('commun.clim.moins_chaud')}>−</button>
+               <b class="num">{b.deg}°</b>
+               <button onclick={() => step(sel.day, sel.index, 1)} disabled={b.deg >= MAX_DEG} aria-label={t('commun.clim.plus_chaud')}>+</button>
+             </div>
+-            <button class="drop" onclick={() => drop(sel.day, sel.index)} disabled={sel.index === 0} title={t('chauffage.table.supprimer')} aria-label={t('chauffage.table.supprimer')}><Icon name="trash" size={15} /></button>
+-            <button class="to" onclick={() => copyTo(sel.day, (sel.day + 1) % 7)} title={t('chauffage.table.copier')} aria-label={t('chauffage.table.copier')}><Icon name="copy" size={15} /></button>
++            <button class="drop" onclick={() => drop(sel.day, sel.index)} disabled={sel.index === 0} title={t('maison.chauffage.table.supprimer')} aria-label={t('maison.chauffage.table.supprimer')}><Icon name="trash" size={15} /></button>
++            <button class="to" onclick={() => copyTo(sel.day, (sel.day + 1) % 7)} title={t('maison.chauffage.table.copier')} aria-label={t('maison.chauffage.table.copier')}><Icon name="copy" size={15} /></button>
+           </div>
+         {/if}
+       </div>
+@@ -369,23 +369,23 @@
+   <div class="legend">
+     <span><i class="dot" style:background={tone(confort)}></i>{t('maison.accueil.chauffage_confort')} <b class="num">{confort}°</b></span>
+     <span><i class="dot" style:background={tone(reduit)}></i>{t('maison.accueil.chauffage_reduit')} <b class="num">{reduit}°</b></span>
+-    <span><i class="dot" style:background="var(--ink-3)"></i>{t('chauffage.niveau.custom')}</span>
++    <span><i class="dot" style:background="var(--ink-3)"></i>{t('maison.chauffage.niveau.custom')}</span>
+   </div>
+ 
+   {#each Object.entries(rewritten) as [day, text] (day)}
+-    <p class="notice">{t('chauffage.message_relu', { texte: `${t(`chauffage.jour.${day}`)} · ${text}` })}</p>
++    <p class="notice">{t('maison.chauffage.message_relu', { texte: `${t(`maison.chauffage.jour.${day}`)} · ${text}` })}</p>
+   {/each}
+ 
+   {#if !readOnly}
+     <div class="bar">
+-      <span class="cap" class:on={dirty}>{dirty ? t('chauffage.table.modifie') : t('chauffage.table.a_jour')}</span>
++      <span class="cap" class:on={dirty}>{dirty ? t('maison.chauffage.table.modifie') : t('maison.chauffage.table.a_jour')}</span>
+       {#if broken.length}
+-        <span class="cap bad">{t('chauffage.table.invalide', { jours: broken.map((d) => t(`chauffage.jour.${d}`)).join(', ') })}</span>
++        <span class="cap bad">{t('maison.chauffage.table.invalide', { jours: broken.map((d) => t(`maison.chauffage.jour.${d}`)).join(', ') })}</span>
+       {:else}
+-        <span class="count muted">{t('chauffage.table.paliers', { n: MAX_BLOCKS })}</span>
++        <span class="count muted">{t('maison.chauffage.table.paliers', { n: MAX_BLOCKS })}</span>
+       {/if}
+       <button class="ghost" onclick={reload} disabled={!dirty || saving}>{t('commun.annuler')}</button>
+-      <button class="save" onclick={save} disabled={!dirty || saving || !!broken.length}><Icon name="save" size={16} />{saving ? t('chauffage.table.envoi') : t('chauffage.table.enregistrer')}</button>
++      <button class="save" onclick={save} disabled={!dirty || saving || !!broken.length}><Icon name="save" size={16} />{saving ? t('maison.chauffage.table.envoi') : t('maison.chauffage.table.enregistrer')}</button>
+     </div>
+   {/if}
+ {/if}
+diff --git a/locales/fr/maison.json b/locales/fr/maison.json
+--- a/locales/fr/maison.json
++++ b/locales/fr/maison.json
+@@ -229,6 +229,7 @@
+   "maison.accueil.poubelle_jaune_court": "Recyclage",
+   "maison.accueil.poubelle_noire_court": "Ordures",
+   "maison.accueil.tablette_lignes": "Pièces",
++  "maison.accueil.presence": "Présence",
+   "maison.accueil.appart": "Appart",
+   "maison.accueil.cave": "Cave à Vins",
+   "maison.accueil.piscine_titre": "Piscine",
+@@ -244,70 +245,70 @@
+   "maison.accueil.vanne_hors_ligne": "hors ligne",
+   "maison.accueil.vanne_titre": "Vanne : {etat} · consigne {temp}",
+   "maison.accueil.vanne_titre_seule": "Vanne : {etat}",
+-  "chauffage.titre": "Chauffage",
+-  "chauffage.sous_titre": "Les vannes thermostatiques de la maison : consigne, table horaire, ou vos automatisations.",
+-  "chauffage.presets": "Modes de la maison",
+-  "chauffage.preset_appliquer": "Appliquer {mode}",
+-  "chauffage.preset_action": "Consigne {mode}",
+-  "chauffage.aucune": "Aucune vanne thermostatique pour l’instant.",
+-  "chauffage.piece": "Température de la pièce",
+-  "chauffage.consigne": "Consigne",
+-  "chauffage.consigne_action": "Consigne {name}",
+-  "chauffage.mode_action": "Mode {name}",
+-  "chauffage.qui_pilote": "Qui pilote",
+-  "chauffage.table_titre": "Programme",
+-  "chauffage.automatisations": "Automatisations",
+-  "chauffage.hint_auto": "La vanne suit la table horaire ci-dessous, toute seule.",
+-  "chauffage.hint_auto_off": "La vanne ne suit plus sa table : vos automatisations décident (la table reste visible, en lecture seule).",
+-  "chauffage.mode_off": "éteinte",
+-  "chauffage.mode_heat": "chauffage",
+-  "chauffage.mode_auto": "programme",
+-  "chauffage.mode_inconnu": "—",
+-  "chauffage.chauffe": "chauffe",
+-  "chauffage.repos": "au repos",
+-  "chauffage.ouverture": "vanne {pct} %",
+-  "chauffage.signal": "signal {lqi}",
+-  "chauffage.pile_basse": "Pile faible : {pct} %",
+-  "chauffage.hors_ligne": "hors ligne",
+-  "chauffage.table_absente": "Cette vanne ne propose pas de table horaire.",
+-  "chauffage.jour.monday": "Lundi",
+-  "chauffage.jour.tuesday": "Mardi",
+-  "chauffage.jour.wednesday": "Mercredi",
+-  "chauffage.jour.thursday": "Jeudi",
+-  "chauffage.jour.friday": "Vendredi",
+-  "chauffage.jour.saturday": "Samedi",
+-  "chauffage.jour.sunday": "Dimanche",
+-  "chauffage.table.vide": "Aucun jour à afficher.",
+-  "chauffage.table.piste": "Piste des 24 heures",
+-  "chauffage.table.palier": "Palier",
+-  "chauffage.table.consigne": "Consigne du palier",
+-  "chauffage.table.supprimer": "Supprimer ce palier",
+-  "chauffage.table.ajouter": "Ajouter un palier",
+-  "chauffage.niveau.custom": "Personnalisé",
+-  "chauffage.table.copier": "Copier ce jour sur le suivant",
+-  "chauffage.table.aplatir": "Revenir à une consigne unique",
+-  "chauffage.table.tous": "Appliquer ce jour à toute la semaine",
+-  "chauffage.table.modifie": "Modifié",
+-  "chauffage.table.a_jour": "À jour",
+-  "chauffage.table.paliers": "{n} paliers au plus par jour",
+-  "chauffage.table.enregistrer": "Enregistrer",
+-  "chauffage.table.envoi": "Envoi…",
+-  "chauffage.table.envoi_jour": "Programme {jour}",
+-  "chauffage.consignes_rapides": "Consignes rapides",
+-  "chauffage.palier_proche": "Prochain palier à {heure} : la consigne tient jusque-là",
+-  "chauffage.neutraliser": "Neutraliser le programme",
+-  "chauffage.neutraliser_aide": "Écrit une consigne unique pour chaque jour, pour qu’un retour au programme ne ressuscite pas d’anciens créneaux.",
+-  "chauffage.neutraliser_fait": "Programme neutralisé",
+-  "chauffage.en_attente": "En attente de la vanne…",
+-  "chauffage.message_relu": "La vanne a enregistré autre chose que ce qui a été envoyé : {texte}",
+-  "chauffage.vers_automatismes": "Ouvrir les automatismes",
+-  "chauffage.mode_off_titre": "Éteinte",
+-  "chauffage.hint_off": "La vanne est fermée : elle ne chauffe pas et ne suit aucun programme.",
+-  "chauffage.rallumer": "Remettre en route",
+-  "chauffage.neutraliser_confirmer": "Écrire une consigne unique de {deg}° sur {n} jour(s) ?",
+-  "chauffage.table.invalide": "Jour(s) invalide(s) : {jours}",
+-  "chauffage.preset_confirmer": "Passer les {n} vanne(s) en « {mode} » ?",
+-  "chauffage.preset_fait": "Appliqué : {mode}",
++  "maison.chauffage.titre": "Chauffage",
++  "maison.chauffage.sous_titre": "Les vannes thermostatiques de la maison : consigne, table horaire, ou vos automatisations.",
++  "maison.chauffage.presets": "Modes de la maison",
++  "maison.chauffage.preset_appliquer": "Appliquer {mode}",
++  "maison.chauffage.preset_action": "Consigne {mode}",
++  "maison.chauffage.aucune": "Aucune vanne thermostatique pour l’instant.",
++  "maison.chauffage.piece": "Température de la pièce",
++  "maison.chauffage.consigne": "Consigne",
++  "maison.chauffage.consigne_action": "Consigne {name}",
++  "maison.chauffage.mode_action": "Mode {name}",
++  "maison.chauffage.qui_pilote": "Qui pilote",
++  "maison.chauffage.table_titre": "Programme",
++  "maison.chauffage.automatisations": "Automatisations",
++  "maison.chauffage.hint_auto": "La vanne suit la table horaire ci-dessous, toute seule.",
++  "maison.chauffage.hint_auto_off": "La vanne ne suit plus sa table : vos automatisations décident (la table reste visible, en lecture seule).",
++  "maison.chauffage.mode_off": "éteinte",
++  "maison.chauffage.mode_heat": "chauffage",
++  "maison.chauffage.mode_auto": "programme",
++  "maison.chauffage.mode_inconnu": "—",
++  "maison.chauffage.chauffe": "chauffe",
++  "maison.chauffage.repos": "au repos",
++  "maison.chauffage.ouverture": "vanne {pct} %",
++  "maison.chauffage.signal": "signal {lqi}",
++  "maison.chauffage.pile_basse": "Pile faible : {pct} %",
++  "maison.chauffage.hors_ligne": "hors ligne",
++  "maison.chauffage.table_absente": "Cette vanne ne propose pas de table horaire.",
++  "maison.chauffage.jour.monday": "Lundi",
++  "maison.chauffage.jour.tuesday": "Mardi",
++  "maison.chauffage.jour.wednesday": "Mercredi",
++  "maison.chauffage.jour.thursday": "Jeudi",
++  "maison.chauffage.jour.friday": "Vendredi",
++  "maison.chauffage.jour.saturday": "Samedi",
++  "maison.chauffage.jour.sunday": "Dimanche",
++  "maison.chauffage.table.vide": "Aucun jour à afficher.",
++  "maison.chauffage.table.piste": "Piste des 24 heures",
++  "maison.chauffage.table.palier": "Palier",
++  "maison.chauffage.table.consigne": "Consigne du palier",
++  "maison.chauffage.table.supprimer": "Supprimer ce palier",
++  "maison.chauffage.table.ajouter": "Ajouter un palier",
++  "maison.chauffage.niveau.custom": "Personnalisé",
++  "maison.chauffage.table.copier": "Copier ce jour sur le suivant",
++  "maison.chauffage.table.aplatir": "Revenir à une consigne unique",
++  "maison.chauffage.table.tous": "Appliquer ce jour à toute la semaine",
++  "maison.chauffage.table.modifie": "Modifié",
++  "maison.chauffage.table.a_jour": "À jour",
++  "maison.chauffage.table.paliers": "{n} paliers au plus par jour",
++  "maison.chauffage.table.enregistrer": "Enregistrer",
++  "maison.chauffage.table.envoi": "Envoi…",
++  "maison.chauffage.table.envoi_jour": "Programme {jour}",
++  "maison.chauffage.consignes_rapides": "Consignes rapides",
++  "maison.chauffage.palier_proche": "Prochain palier à {heure} : la consigne tient jusque-là",
++  "maison.chauffage.neutraliser": "Neutraliser le programme",
++  "maison.chauffage.neutraliser_aide": "Écrit une consigne unique pour chaque jour, pour qu’un retour au programme ne ressuscite pas d’anciens créneaux.",
++  "maison.chauffage.neutraliser_fait": "Programme neutralisé",
++  "maison.chauffage.en_attente": "En attente de la vanne…",
++  "maison.chauffage.message_relu": "La vanne a enregistré autre chose que ce qui a été envoyé : {texte}",
++  "maison.chauffage.vers_automatismes": "Ouvrir les automatismes",
++  "maison.chauffage.mode_off_titre": "Éteinte",
++  "maison.chauffage.hint_off": "La vanne est fermée : elle ne chauffe pas et ne suit aucun programme.",
++  "maison.chauffage.rallumer": "Remettre en route",
++  "maison.chauffage.neutraliser_confirmer": "Écrire une consigne unique de {deg}° sur {n} jour(s) ?",
++  "maison.chauffage.table.invalide": "Jour(s) invalide(s) : {jours}",
++  "maison.chauffage.preset_confirmer": "Passer les {n} vanne(s) en « {mode} » ?",
++  "maison.chauffage.preset_fait": "Appliqué : {mode}",
+   "maison.historique.aria": "Historique de {name}",
+   "maison.historique.ouvrir": "Voir l’historique de {name}",
+   "maison.historique.plage_6h": "6 h",
+diff --git a/locales/en/maison.json b/locales/en/maison.json
+--- a/locales/en/maison.json
++++ b/locales/en/maison.json
+@@ -229,6 +229,7 @@
+   "maison.accueil.poubelle_jaune_court": "Recycling",
+   "maison.accueil.poubelle_noire_court": "Household",
+   "maison.accueil.tablette_lignes": "Rooms",
++  "maison.accueil.presence": "Presence",
+   "maison.accueil.appart": "Flat",
+   "maison.accueil.cave": "Wine cellar",
+   "maison.accueil.piscine_titre": "Pool",
+@@ -244,70 +245,70 @@
+   "maison.accueil.vanne_hors_ligne": "offline",
+   "maison.accueil.vanne_titre": "Valve: {etat} · setpoint {temp}",
+   "maison.accueil.vanne_titre_seule": "Valve: {etat}",
+-  "chauffage.titre": "Heating",
+-  "chauffage.sous_titre": "The house’s thermostatic valves: setpoint, weekly timetable, or your automations.",
+-  "chauffage.presets": "House modes",
+-  "chauffage.preset_appliquer": "Apply {mode}",
+-  "chauffage.preset_action": "Setpoint {mode}",
+-  "chauffage.aucune": "No thermostatic valve yet.",
+-  "chauffage.piece": "Room temperature",
+-  "chauffage.consigne": "Setpoint",
+-  "chauffage.consigne_action": "Setpoint {name}",
+-  "chauffage.mode_action": "Mode {name}",
+-  "chauffage.qui_pilote": "Who drives it",
+-  "chauffage.table_titre": "Schedule",
+-  "chauffage.automatisations": "Automations",
+-  "chauffage.hint_auto": "The valve follows the timetable below, on its own.",
+-  "chauffage.hint_auto_off": "The valve no longer follows its timetable: your automations decide (the timetable stays visible, read-only).",
+-  "chauffage.mode_off": "off",
+-  "chauffage.mode_heat": "heating",
+-  "chauffage.mode_auto": "schedule",
+-  "chauffage.mode_inconnu": "—",
+-  "chauffage.chauffe": "heating",
+-  "chauffage.repos": "idle",
+-  "chauffage.ouverture": "valve {pct}%",
+-  "chauffage.signal": "signal {lqi}",
+-  "chauffage.pile_basse": "Low battery: {pct}%",
+-  "chauffage.hors_ligne": "offline",
+-  "chauffage.table_absente": "This valve offers no weekly timetable.",
+-  "chauffage.jour.monday": "Monday",
+-  "chauffage.jour.tuesday": "Tuesday",
+-  "chauffage.jour.wednesday": "Wednesday",
+-  "chauffage.jour.thursday": "Thursday",
+-  "chauffage.jour.friday": "Friday",
+-  "chauffage.jour.saturday": "Saturday",
+-  "chauffage.jour.sunday": "Sunday",
+-  "chauffage.table.vide": "No day to show.",
+-  "chauffage.table.piste": "24-hour track",
+-  "chauffage.table.palier": "Step",
+-  "chauffage.table.consigne": "Step setpoint",
+-  "chauffage.table.supprimer": "Remove this step",
+-  "chauffage.table.ajouter": "Add a step",
+-  "chauffage.niveau.custom": "Custom",
+-  "chauffage.table.copier": "Copy this day to the next",
+-  "chauffage.table.aplatir": "Back to a single setpoint",
+-  "chauffage.table.tous": "Apply this day to the whole week",
+-  "chauffage.table.modifie": "Changed",
+-  "chauffage.table.a_jour": "Up to date",
+-  "chauffage.table.paliers": "{n} steps a day at most",
+-  "chauffage.table.enregistrer": "Save",
+-  "chauffage.table.envoi": "Sending…",
+-  "chauffage.table.envoi_jour": "{jour} schedule",
+-  "chauffage.consignes_rapides": "Quick setpoints",
+-  "chauffage.palier_proche": "Next step at {heure}: the setpoint holds until then",
+-  "chauffage.neutraliser": "Clear the schedule",
+-  "chauffage.neutraliser_aide": "Writes a single setpoint for each day, so going back to the schedule does not revive old steps.",
+-  "chauffage.neutraliser_fait": "Schedule cleared",
+-  "chauffage.en_attente": "Waiting for the valve…",
+-  "chauffage.message_relu": "The valve stored something else than what was sent: {texte}",
+-  "chauffage.vers_automatismes": "Open the automations",
+-  "chauffage.mode_off_titre": "Off",
+-  "chauffage.hint_off": "The valve is shut: it heats nothing and follows no timetable.",
+-  "chauffage.rallumer": "Turn back on",
+-  "chauffage.neutraliser_confirmer": "Write one flat {deg}° setpoint to {n} day(s)?",
+-  "chauffage.table.invalide": "Invalid day(s): {jours}",
+-  "chauffage.preset_confirmer": "Switch all {n} valve(s) to “{mode}”?",
+-  "chauffage.preset_fait": "Applied: {mode}",
++  "maison.chauffage.titre": "Heating",
++  "maison.chauffage.sous_titre": "The house’s thermostatic valves: setpoint, weekly timetable, or your automations.",
++  "maison.chauffage.presets": "House modes",
++  "maison.chauffage.preset_appliquer": "Apply {mode}",
++  "maison.chauffage.preset_action": "Setpoint {mode}",
++  "maison.chauffage.aucune": "No thermostatic valve yet.",
++  "maison.chauffage.piece": "Room temperature",
++  "maison.chauffage.consigne": "Setpoint",
++  "maison.chauffage.consigne_action": "Setpoint {name}",
++  "maison.chauffage.mode_action": "Mode {name}",
++  "maison.chauffage.qui_pilote": "Who drives it",
++  "maison.chauffage.table_titre": "Schedule",
++  "maison.chauffage.automatisations": "Automations",
++  "maison.chauffage.hint_auto": "The valve follows the timetable below, on its own.",
++  "maison.chauffage.hint_auto_off": "The valve no longer follows its timetable: your automations decide (the timetable stays visible, read-only).",
++  "maison.chauffage.mode_off": "off",
++  "maison.chauffage.mode_heat": "heating",
++  "maison.chauffage.mode_auto": "schedule",
++  "maison.chauffage.mode_inconnu": "—",
++  "maison.chauffage.chauffe": "heating",
++  "maison.chauffage.repos": "idle",
++  "maison.chauffage.ouverture": "valve {pct}%",
++  "maison.chauffage.signal": "signal {lqi}",
++  "maison.chauffage.pile_basse": "Low battery: {pct}%",
++  "maison.chauffage.hors_ligne": "offline",
++  "maison.chauffage.table_absente": "This valve offers no weekly timetable.",
++  "maison.chauffage.jour.monday": "Monday",
++  "maison.chauffage.jour.tuesday": "Tuesday",
++  "maison.chauffage.jour.wednesday": "Wednesday",
++  "maison.chauffage.jour.thursday": "Thursday",
++  "maison.chauffage.jour.friday": "Friday",
++  "maison.chauffage.jour.saturday": "Saturday",
++  "maison.chauffage.jour.sunday": "Sunday",
++  "maison.chauffage.table.vide": "No day to show.",
++  "maison.chauffage.table.piste": "24-hour track",
++  "maison.chauffage.table.palier": "Step",
++  "maison.chauffage.table.consigne": "Step setpoint",
++  "maison.chauffage.table.supprimer": "Remove this step",
++  "maison.chauffage.table.ajouter": "Add a step",
++  "maison.chauffage.niveau.custom": "Custom",
++  "maison.chauffage.table.copier": "Copy this day to the next",
++  "maison.chauffage.table.aplatir": "Back to a single setpoint",
++  "maison.chauffage.table.tous": "Apply this day to the whole week",
++  "maison.chauffage.table.modifie": "Changed",
++  "maison.chauffage.table.a_jour": "Up to date",
++  "maison.chauffage.table.paliers": "{n} steps a day at most",
++  "maison.chauffage.table.enregistrer": "Save",
++  "maison.chauffage.table.envoi": "Sending…",
++  "maison.chauffage.table.envoi_jour": "{jour} schedule",
++  "maison.chauffage.consignes_rapides": "Quick setpoints",
++  "maison.chauffage.palier_proche": "Next step at {heure}: the setpoint holds until then",
++  "maison.chauffage.neutraliser": "Clear the schedule",
++  "maison.chauffage.neutraliser_aide": "Writes a single setpoint for each day, so going back to the schedule does not revive old steps.",
++  "maison.chauffage.neutraliser_fait": "Schedule cleared",
++  "maison.chauffage.en_attente": "Waiting for the valve…",
++  "maison.chauffage.message_relu": "The valve stored something else than what was sent: {texte}",
++  "maison.chauffage.vers_automatismes": "Open the automations",
++  "maison.chauffage.mode_off_titre": "Off",
++  "maison.chauffage.hint_off": "The valve is shut: it heats nothing and follows no timetable.",
++  "maison.chauffage.rallumer": "Turn back on",
++  "maison.chauffage.neutraliser_confirmer": "Write one flat {deg}° setpoint to {n} day(s)?",
++  "maison.chauffage.table.invalide": "Invalid day(s): {jours}",
++  "maison.chauffage.preset_confirmer": "Switch all {n} valve(s) to “{mode}”?",
++  "maison.chauffage.preset_fait": "Applied: {mode}",
+   "maison.historique.aria": "History of {name}",
+   "maison.historique.ouvrir": "See the history of {name}",
+   "maison.historique.plage_6h": "6 h",

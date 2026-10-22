@@ -42,6 +42,8 @@ Nouveaux commits le 2026-10-14 :
   refontes du dashboard (`accueil-*`, `dashboard-clim`, `dehors`, `fuseaux-horaires`,
   `tablette-lenovo-moli`), la **parité `tablette-2025`** (`tablette-2025-parity.md`),
   les **satellites vocal/son** (`satellites-vocal-son.md` : ESP32 S3 Box, Alexa, Piper/Whisper),
+  la **page Infra** (`infra-moli.md` : pilote `host`, `infra.json` par l'API Docker, cron),
+  le **pilote Telegram** (`telegram-moli.md` : bot dédié, jeton hors dépôt, envoi seul),
   audits (`security-audit`, `energy-crosscheck`).
 - `notes/patches/` : patches du **fork local** du dashboard Moli (édits ponctuels à
   ré-appliquer après chaque resync/mise à jour du dépôt source, et à remonter en **PR amont**
@@ -72,6 +74,31 @@ Nouveaux commits le 2026-10-14 :
   dans `notes/tempo-plugin.md`.
   ⚠️ `accueil-tempo` et `accueil-room-icons` sont **déjà inclus verbatim** dans
   `tablette2025-parity.patch` (base courante) — ne pas les appliquer par-dessus.
+
+  **Chaîne post-parité : l'ordre fait foi dans `AGENTS.md` §5 (« Ordre explicite de la
+  chaîne Accueil »), n° 1 → n° 12.** En résumé, par-dessus `tablette2025-parity.patch` :
+  `accueil-plan-scale` → `accueil-plan-hero` → `accueil-tablette2025-pixel` →
+  `accueil-plan-pins` → `chauffage-trv` → `chauffage-trv-zones` →
+  `accueil-trv-witness` → `accueil-badges-rebuild` → `accueil-history` →
+  `accueil-pieces-justes` → `accueil-perf-lite`.
+
+  ⚠️ **Dernier patch de la chaîne : `accueil-perf-lite.patch`** (n° 12) — l'orbe ne
+  repeint plus chaque frame (le souffle n'anime plus un `filter`), le ciel météo démarre
+  **figé** sur un appareil lent (`isLean`, `lib/lean.js`), et la carte Plan demande la
+  vignette `.webp` que `/api/plan` annonce (`thumb`) au lieu de la deviner. Sa vignette
+  n'est pas dans le patch : `data/plan/<image>.webp` est une donnée. Voir
+  `notes/accueil-perf-lite.md`.
+
+  Le n° 11, `accueil-pieces-justes.patch` — les pastilles d'une rangée disent la vérité de
+  sa pièce (pièce = celle de l'appareil, une pastille par grandeur —
+  température/humidité/présence —, `local_temperature` reconnu, lampe → groupe Hue,
+  `/api/home` rechargé sur `label_changed` sans F5), part de l'état laissé par
+  `accueil-history.patch`. Ses **5 étiquettes `room`** ne sont pas dans le patch : elles
+  vivent dans `data/labels.toml` et se reposent avec `notes/patches/labels.toml.pieces`.
+  Voir `notes/accueil-pieces-justes.md`.
+
+  Les deux patchs se rejouent bout à bout sur un clone propre de `d54c3de` sans conflit
+  (vérifié : la chaîne n° 1→12 reproduit l'arbre en production fichier par fichier).
 
   ⚠️ **Base courante : `tablette2025-parity.patch`** — cumulatif depuis `d54c3de`, il
   **remplace toute la chaîne `accueil-*`** et porte la parité complète du dashboard HA
