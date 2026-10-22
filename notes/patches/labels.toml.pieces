@@ -1,0 +1,58 @@
+# Étiquettes du lot « pièces justes » — `data/labels.toml`
+#
+# Extraites de `data/labels.toml` du CT125 le 2026-10-21. Ce sont **les seules
+# lignes que ce lot a posées** : sans elles, `roomOf()` rend `null`, les rangées
+# concernées retombent sur leur définition et le correctif ne se voit pas.
+# À rejouer après un `restore` ou un `labels.toml` remis à zéro.
+#
+# Deux voies, au choix :
+#
+#   1. par l'outil (recommandé — journalisé, `Origin::Mcp`/`Assistant`,
+#      et la garde s'applique) :
+#
+#        ssh moli-os 'python3 - <<PY
+#        import json,urllib.request
+#        def set_room(dev, room):
+#            body=json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call",
+#              "params":{"name":"set_label","arguments":{"device":dev,"room":room}}}).encode()
+#            r=urllib.request.Request("http://127.0.0.1:8790/mcp",data=body,
+#              headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"})
+#            print(dev, urllib.request.urlopen(r).read().decode()[:80])
+#        for dev, room in [("z2m:0x286847fffe96a2cd","Alicia"),
+#                          ("hue:c22e618d-8750-43cf-85e5-07efb17ad2c7","Parents"),
+#                          ("hue:9a78c910-52b7-4d1a-a8d4-8027db90c6d7","Parents"),
+#                          ("hue:99863121-9c39-4b64-a1f7-7ef2a061a0f9","Parents"),
+#                          ("z2m:0x00158d00022cbf63","Parents")]:
+#            set_room(dev, room)
+#        PY'
+#
+#   2. en éditant `data/labels.toml` (Moli arrêté, ou le fichier est relu au
+#      démarrage), avec la sauvegarde d'usage :
+#
+#        ssh moli-os 'cd /opt/moli-os && cp data/labels.toml data/labels.toml.bak-avant-etiquettes'
+#        # puis fusionner les blocs ci-dessous dans data/labels.toml
+#        ssh moli-os 'cd /opt/moli-os && docker compose restart moli-os'
+#
+# Vérification (les 5 doivent apparaître avec leur `room`) :
+#
+#   ssh moli-os 'curl -s http://127.0.0.1:8790/api/devices' | python3 -c "
+#   import json,sys
+#   a=json.load(sys.stdin); a=a if isinstance(a,list) else a['devices']
+#   for d in a:
+#       if (d.get('label') or {}).get('room') in ('Alicia','Parents'):
+#           print(d['id'], d['label'])"'
+
+["z2m:0x286847fffe96a2cd"]
+room = "Alicia"
+
+["hue:c22e618d-8750-43cf-85e5-07efb17ad2c7"]
+room = "Parents"
+
+["hue:9a78c910-52b7-4d1a-a8d4-8027db90c6d7"]
+room = "Parents"
+
+["hue:99863121-9c39-4b64-a1f7-7ef2a061a0f9"]
+room = "Parents"
+
+["z2m:0x00158d00022cbf63"]
+room = "Parents"
