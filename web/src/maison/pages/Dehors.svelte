@@ -1,5 +1,5 @@
 <script>
-  import { home, value, num, isOn, reachable } from '../lib/home.svelte.js';
+  import { home, value, num, isOn, reachable, device, powerKey, historyOf } from '../lib/home.svelte.js';
   import { weatherOf } from '../lib/icons.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from '../ui/Icon.svelte';
@@ -11,6 +11,7 @@
   const air = $derived(out.air);
   const pool = $derived(out.pool);
   const v = (id, key) => value(id, key);
+  const histTitle = (k) => t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t(`maison.dehors.${k}`)}` });
 
   const day = $derived(v(w, 'daylight') !== false);
   const sky = $derived(weatherOf(v(w, 'weather_code'), day));
@@ -46,7 +47,7 @@
     orp == null ? null : orp < 650 ? t('maison.dehors.orp_faible') : orp > 800 ? t('maison.dehors.orp_forte') : t('maison.dehors.orp_saine'),
   );
   const pumpId = $derived(out.pool_pump);
-  const pumpKnown = $derived(pumpId && reachable(pumpId) && v(pumpId, 'switch_1') != null);
+  const pumpKnown = $derived(pumpId && reachable(pumpId) && powerKey(device(pumpId)) != null);
 
   const outsideCams = $derived((home.config?.favorites?.cameras ?? []).filter((c) => !/sonnette|doorbell/i.test(c.name)));
 
@@ -68,15 +69,15 @@
     <div class="now">
       <svg class="sky-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={sky.icon} /></svg>
       <div>
-        <strong class="temp num">{num(v(w, 'temperature'), 0)}°</strong>
+        <button class="temp live num" onclick={() => historyOf(w, 'temperature')} title={t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.dehors.titre')} · ${t('commun.piece.temperature')}` })}>{num(v(w, 'temperature'), 0)}°</button>
         <span class="label">{sky.label}</span>
-        <span class="muted">{t('maison.dehors.ressenti', { feels: num(v(w, 'feels_like'), 0), max: num(v(w, 'today_max'), 0), min: num(v(w, 'today_min'), 0) })}</span>
+        <span class="muted">{t('maison.dehors.ressenti')} <button class="live num" onclick={() => historyOf(w, 'feels_like')} title={histTitle('ressenti')} aria-label={histTitle('ressenti')}>{num(v(w, 'feels_like'), 0)}°</button> · {t('maison.dehors.ressenti_ecart', { max: num(v(w, 'today_max'), 0), min: num(v(w, 'today_min'), 0) })}</span>
       </div>
     </div>
     <div class="facts">
-      <div><Icon name="humidity" size={20} /><small>{t('maison.dehors.humidite')}</small><b class="num">{num(v(w, 'humidity'))} %</b></div>
-      <div><Icon name="wind" size={20} /><small>{t('maison.dehors.vent')}</small><b class="num">{num(v(w, 'wind_speed'))} km/h</b><em class="muted num">{t('maison.dehors.rafales', { speed: num(v(w, 'wind_gusts')) })}</em></div>
-      <div><Icon name="water" size={20} /><small>{t('maison.dehors.pluie_jour')}</small><b class="num">{num(v(w, 'today_rain'), 1)} mm</b><em class="muted num">{t('maison.dehors.risque', { pct: num(v(w, 'today_rain_chance')) })}</em></div>
+      <div><Icon name="humidity" size={20} /><small>{t('maison.dehors.humidite')}</small><button class="live num" onclick={() => historyOf(w, 'humidity')} title={histTitle('humidite')} aria-label={histTitle('humidite')}>{num(v(w, 'humidity'))} %</button></div>
+      <div><Icon name="wind" size={20} /><small>{t('maison.dehors.vent')}</small><button class="live num" onclick={() => historyOf(w, 'wind_speed')} title={histTitle('vent')} aria-label={histTitle('vent')}>{num(v(w, 'wind_speed'))} km/h</button><em class="muted num">{t('maison.dehors.rafales')} <button class="live num" onclick={() => historyOf(w, 'wind_gusts')} title={histTitle('rafales')} aria-label={histTitle('rafales')}>{num(v(w, 'wind_gusts'))} km/h</button></em></div>
+      <div><Icon name="water" size={20} /><small>{t('maison.dehors.pluie_jour')}</small><button class="live num" onclick={() => historyOf(w, 'today_rain')} title={histTitle('pluie_jour')} aria-label={histTitle('pluie_jour')}>{num(v(w, 'today_rain'), 1)} mm</button><em class="muted num">{t('maison.dehors.risque', { pct: num(v(w, 'today_rain_chance')) })}</em></div>
       <div><Icon name="sun-angle" size={20} /><small>{t('maison.dehors.soleil')}</small><b class="num">{hhmm(v(w, 'sunrise'))} → {hhmm(v(w, 'sunset'))}</b></div>
     </div>
     {#if sunPos != null}
@@ -88,8 +89,8 @@
     <section class="card">
       <div class="card-head"><h2><Icon name="leaf" size={18} />{t('maison.dehors.air')}</h2><span class="chip {aqiTone}">{aqiWord}</span></div>
       <div class="pairs">
-        <div><small>{t('maison.dehors.indice')}</small><b class="num">{num(aqi)}</b></div>
-        <div><small>UV</small><b class="num">{num(uv, 0)}</b><em class="muted">{uvWord}</em></div>
+        <div><small>{t('maison.dehors.indice')}</small>{#if v(air, 'aqi') != null}<button class="live num" onclick={() => historyOf(air, 'aqi')} title={histTitle('indice')} aria-label={histTitle('indice')}>{num(aqi)}</button>{:else}<b class="num">—</b>{/if}</div>
+        <div><small>UV</small>{#if v(air, 'uv_index') != null}<button class="live num" onclick={() => historyOf(air, 'uv_index')} title={t('maison.historique.ouvrir', { name: `${t('maison.dehors.air')} · UV` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.dehors.air')} · UV` })}>{num(uv, 0)}</button>{:else}<b class="num">—</b>{/if}<em class="muted">{uvWord}</em></div>
         <div><small>{t('maison.dehors.particules')}</small><b class="num">{num(v(air, 'pm2_5'), 1)} µg/m³</b></div>
         <div><small>{t('maison.dehors.ozone')}</small><b class="num">{num(v(air, 'ozone'))} µg/m³</b></div>
       </div>
@@ -102,9 +103,9 @@
           {#if v(pool, 'action_required') === true}<span class="chip cool">{t('maison.dehors.coup_oeil')}</span>{:else}<span class="chip good">{t('maison.dehors.tout_va_bien')}</span>{/if}
         </div>
         <div class="pairs">
-          <div><small>{t('maison.dehors.eau')}</small><b class="num">{v(pool, 'temperature') != null ? `${num(v(pool, 'temperature'), 1)}°` : '—'}</b></div>
-          <div><small>pH</small><b class="num">{num(ph, 1)}</b>{#if phWord}<em class="muted">{phWord}</em>{/if}</div>
-          <div><small>{t('maison.dehors.chlore')}</small><b class="num">{orp != null ? `${num(orp)} mV` : '—'}</b>{#if orpWord}<em class="muted">{orpWord}</em>{/if}</div>
+          <div><small>{t('maison.dehors.eau')}</small>{#if v(pool, 'temperature') != null}<button class="live num" onclick={() => historyOf(pool, 'temperature')} title={histTitle('eau')} aria-label={histTitle('eau')}>{num(v(pool, 'temperature'), 1)}°</button>{:else}<b class="num">—</b>{/if}</div>
+          <div><small>pH</small>{#if ph != null}<button class="live num" onclick={() => historyOf(pool, 'ph')} title={histTitle('piscine')} aria-label={histTitle('piscine')}>{num(ph, 1)}</button>{:else}<b class="num">—</b>{/if}{#if phWord}<em class="muted">{phWord}</em>{/if}</div>
+          <div><small>{t('maison.dehors.chlore')}</small>{#if orp != null}<button class="live num" onclick={() => historyOf(pool, 'orp')} title={histTitle('chlore')} aria-label={histTitle('chlore')}>{num(orp)} mV</button>{:else}<b class="num">—</b>{/if}{#if orpWord}<em class="muted">{orpWord}</em>{/if}</div>
           <div><small>{t('maison.dehors.filtration')}</small><b class="num">{v(pool, 'filtration') != null ? t('maison.dehors.heures_jour', { hours: num(v(pool, 'filtration')) }) : '—'}</b></div>
         </div>
         {#if v(pool, 'temperature') == null && ph == null}
@@ -244,6 +245,40 @@
     font-weight: 650;
   }
 
+  /* Un relevé cliquable garde la taille et la graisse de sa valeur ; seul
+     son geste change (il ouvre l'historique, il ne commande rien). */
+  .live {
+    border: 0;
+    padding: 1px 6px;
+    margin: -1px -6px;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 17px;
+    font-weight: 650;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .now .temp.live {
+    font-size: 64px;
+    font-weight: 250;
+    letter-spacing: -0.04em;
+    line-height: 0.95;
+  }
+
+  @media (hover: hover) {
+    .live:hover {
+      background: color-mix(in srgb, var(--ink) 7%, transparent);
+    }
+  }
+
+  .live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
+  }
+
   em {
     font-style: normal;
     font-size: 13px;
@@ -315,6 +350,10 @@
     }
 
     .temp {
+      font-size: 52px;
+    }
+
+    .now .temp.live {
       font-size: 52px;
     }
   }

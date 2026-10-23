@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import Icon from '../ui/Icon.svelte';
-  import { hub, value, nameOf, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered } from '../lib/home.svelte.js';
+  import { hub, value, nameOf, spokenNameOf, pointLabel, deviceKind, isOn, toggle, num, note, roomOf, savePref, doorOpen, leak, motion, isGroup, isFixture, unpowered, canonicalId, pinIcon, pinReading, pinReadingPoint, historyOf } from '../lib/home.svelte.js';
   import { asHuman, CANCELLED } from '../lib/auto.svelte.js';
   import Drawing from '../plan/Drawing.svelte';
   import House3D from '../plan/House3D.svelte';
@@ -94,6 +94,18 @@
     loaded = true;
   }
 
+  // The hub's devices may arrive after the plan: heal a stale spelling
+  // once they are known (the id is kept otherwise).
+  $effect(() => {
+    if (!loaded) return;
+    for (const f of plan.floors ?? []) {
+      for (const s of f.devices ?? []) {
+        const id = canonicalId(s.id);
+        if (id !== s.id) s.id = id;
+      }
+    }
+  });
+
   const shown = $derived(editing ? draft : plan);
   const floor = $derived(shown?.floors.find((f) => f.id === floorId) ?? shown?.floors[0] ?? null);
   const drawn = $derived((shown?.floors ?? []).some((f) => f.size));
@@ -143,35 +155,16 @@
 
   // ---- what a token shows -------------------------------------------------------
 
-  const ICON = { light: 'light', group: 'light-group', plug: 'power', climate: 'air-conditioner', camera: 'cctv', speaker: 'speaker', tv: 'tv', cover: 'shutter' };
-  const has = (d, key) => d.points.some((p) => p.key === key);
-
-  function iconOf(d) {
-    const kind = deviceKind(d);
-    if (ICON[kind]) return ICON[kind];
-    if (has(d, 'smoke')) return 'fire';
-    if (has(d, 'water_leak') || has(d, 'watersensor_state')) return 'water';
-    if (has(d, 'contact') || has(d, 'doorcontact_state')) return 'door';
-    if (has(d, 'occupancy') || has(d, 'motion') || has(d, 'pir')) return 'motion';
-    if (has(d, 'temperature') || has(d, 'temp_current')) return 'thermometer';
-    return 'info';
-  }
-
-  /** A short reading next to the token (sensors). */
-  function reading(d) {
-    const t = value(d.id, 'temperature') ?? value(d.id, 'temp_current');
-    if (typeof t === 'number' && deviceKind(d) !== 'climate' && !floor?.size) return `${num(t, 1)}°`;
-    const p = value(d.id, 'power') ?? value(d.id, 'cur_power');
-    if (typeof p === 'number' && p >= 1) return `${num(p)} W`;
-    return null;
-  }
-
   function alarming(d) {
     return value(d.id, 'smoke') === true || leak(d.id);
   }
 
   function opening(d) {
-    return doorOpen(d.id) === true || motion(d.id);
+    return doorOpen(d.id) === true;
+  }
+
+  function triggered(d) {
+    return motion(d.id);
   }
 
   function lit(d) {
@@ -412,15 +405,23 @@
     class:lit={lit(d)}
     class:alarm={alarming(d)}
     class:open={opening(d)}
+    class:motion={triggered(d)}
     class:off={d.online === false}
     onclick={(e) => { e.stopPropagation(); tap(d); }}
     onpointerdown={(e) => grab(e, spot)}
     aria-label={lit(d) ? t('maison.plan.jeton_allume', { name: nameOf(d.id) }) : nameOf(d.id)}
     title={nameOf(d.id)}
   >
-    <Icon name={iconOf(d)} size={18} />
+    <Icon name={pinIcon(d)} size={18} />
   </button>
-  {#if reading(d)}<span class="reading">{reading(d)}</span>{/if}
+  {#if pinReading(d, { drawn: !!floor?.size })}
+    {@const readKey = pinReadingPoint(d, { drawn: !!floor?.size })}
+    {#if readKey}
+      <button class="reading live" onclick={(e) => { e.stopPropagation(); historyOf(d.id, readKey); }} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${pointLabel(null, readKey)}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${pointLabel(null, readKey)}` })}>{pinReading(d, { drawn: !!floor?.size })}</button>
+    {:else}
+      <span class="reading">{pinReading(d, { drawn: !!floor?.size })}</span>
+    {/if}
+  {/if}
   <span class="name">{nameOf(d.id)}</span>
   {#if editing}
     <button class="unplace" onclick={(e) => { e.stopPropagation(); unplace(spot); }} aria-label={t('maison.plan.retirer_du_plan', { name: nameOf(d.id) })}><Icon name="close" size={12} /></button>
@@ -574,7 +575,7 @@
             {#each unplaced as d (d.id)}
               <li>
                 <button class:chosen={picking === d.id} onclick={() => (picking = picking === d.id ? null : d.id)}>
-                  <Icon name={iconOf(d)} size={16} /><span>{nameOf(d.id)}</span>{#if roomOf(d)}<small>{roomOf(d)}</small>{/if}
+                  <Icon name={pinIcon(d)} size={16} /><span>{nameOf(d.id)}</span>{#if roomOf(d)}<small>{roomOf(d)}</small>{/if}
                 </button>
               </li>
             {/each}
@@ -921,6 +922,13 @@
     color: var(--cool);
   }
 
+  /* A movement is red (asked), but steady: the alarm keeps the pulsing
+     halo, so a walk-through never looks like smoke or a leak. */
+  .token.motion {
+    background: var(--alert);
+    color: #fff;
+  }
+
   .token.alarm {
     background: var(--alert);
     color: #fff;
@@ -952,6 +960,21 @@
     font-size: 11px;
     font-weight: 700;
     box-shadow: var(--shadow);
+  }
+
+  /* Le relevé posé sur le plan ouvre son historique (le jeton, lui,
+     commande toujours l'appareil). */
+  button.reading.live {
+    border: 0;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  button.reading.live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 
   .name {

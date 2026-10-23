@@ -5,8 +5,9 @@
   import Icon from './Icon.svelte';
 
   /** A strip of ambiances for these lights (a room): one tap, the room
-   *  takes the look. Lamps that cannot follow are left alone by Moli. */
-  let { lights, label } = $props();
+   *  takes the look. Lamps that cannot follow are left alone by Moli.
+   *  `compact`: swatches alone (no names), to save room. */
+  let { lights, label, compact = false } = $props();
 
   onMount(loadAmbiances);
 
@@ -21,9 +22,9 @@
   <div class="strip" role="group" aria-label={t('commun.ambiances', { label })}>
     {#each looks.list as a (a.id)}
       {@const busy = looks.busy === JSON.stringify({ ambiance: a.id })}
-      <button class="look" class:busy onclick={() => setLook(lights, { ambiance: a.id }, t('commun.action', { label, action: a.name }))} disabled={looks.busy != null}>
+      <button class="look" class:busy class:compact onclick={() => setLook(lights, { ambiance: a.id }, t('commun.action', { label, action: a.name }))} disabled={looks.busy != null} title={compact ? a.name : null}>
         <span class="swatch" class:pale={!a.colors.length} style:background={swatch(a)}><Icon name={a.icon} size={16} /></span>
-        <span class="name">{a.name}</span>
+        {#if !compact}<span class="name">{a.name}</span>{/if}
       </button>
     {/each}
   </div>
@@ -100,6 +101,11 @@
     text-align: center;
     line-height: 1.2;
     color: var(--ink-2);
+  }
+
+  .look.compact {
+    width: auto;
+    padding: 6px;
   }
 
   .busy .swatch {

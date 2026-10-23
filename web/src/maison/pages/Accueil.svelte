@@ -1,41 +1,32 @@
 <script>
-  import { onMount } from 'svelte';
-  import { home, hub, value, device, isOn, clock, num, relative, lastSeen, roomList, lampsOf, nameOf, doorOpen, leak, lowBattery, act, pending } from '../lib/home.svelte.js';
+  import { home, hub, value, device, clock, num, nameOf, doorOpen, leak, lowBattery, act, pending, HOUSE_TZ } from '../lib/home.svelte.js';
   import { isPrinter, phase } from '../lib/printers.js';
   import { t, locale } from '../../lib/i18n.svelte.js';
   import Icon from '../ui/Icon.svelte';
-  import LightTile from '../ui/LightTile.svelte';
-  import ClimateCard from '../ui/ClimateCard.svelte';
-  import EnergyCard from '../ui/EnergyCard.svelte';
-  import CameraTile from '../ui/CameraTile.svelte';
-  import AmbiancePicker from '../ui/AmbiancePicker.svelte';
-  import Routines from '../ui/Routines.svelte';
   import SkyHero from '../ui/SkyHero.svelte';
+  import HeatingBar from '../ui/HeatingBar.svelte';
+  import WeekWeather from '../ui/WeekWeather.svelte';
+  import WeatherNow from '../ui/WeatherNow.svelte';
+  import TabletteRows from '../ui/TabletteRows.svelte';
+  import BatteryGauge from '../ui/BatteryGauge.svelte';
+  import AccueilBadges from '../ui/AccueilBadges.svelte';
+  import PlanPreview from '../ui/PlanPreview.svelte';
+  import BinsCard from '../ui/BinsCard.svelte';
+  import PoolCard from '../ui/PoolCard.svelte';
+  import CameraCard from '../ui/CameraCard.svelte';
 
   const cfg = $derived(home.config ?? {});
   const out = $derived(cfg.outdoor ?? {});
 
-  const lights = $derived(cfg.favorites?.lights ?? []);
-  const litCount = $derived(lights.filter((l) => [l.id, ...(l.also ?? [])].some((i) => isOn(i))).length);
+  // La caméra de la tablette : la première des favoris (l'entrée), sinon la
+  // première caméra de la maison. Elle n'existe que si elle répond.
+  const camera = $derived.by(() => {
+    const fav = (cfg.favorites?.cameras ?? [])[0];
+    if (fav?.id && device(fav.id)) return { id: fav.id, name: fav.name ?? nameOf(fav.id) };
+    const cam = Object.values(hub.devices).find((d) => d.camera === true);
+    return cam ? { id: cam.id, name: nameOf(cam.id) } : null;
+  });
 
-  // Ambiances, room by room (the last room chosen is remembered here).
-  const moodRooms = $derived(roomList().map((r) => ({ name: r.name, lamps: lampsOf(r) })).filter((r) => r.lamps.length));
-  let moodPick = $state((() => {
-    try {
-      return localStorage.getItem('moli.mood-room');
-    } catch {
-      return null;
-    }
-  })());
-  const mood = $derived(moodRooms.find((r) => r.name === moodPick) ?? moodRooms.find((r) => r.name === 'Salon') ?? moodRooms[0]);
-  function pickRoom(name) {
-    moodPick = name;
-    try {
-      localStorage.setItem('moli.mood-room', name);
-    } catch {
-      /* remembered for this visit only */
-    }
-  }
 
   // The house's mode (a helper, « Mode Maison »): one tap, like Home
   // Assistant's mode buttons.
@@ -113,42 +104,10 @@
     if (out.pool && value(out.pool, 'action_required') === true) list.push({ tone: 'cool', icon: 'pool', text: t('maison.accueil.piscine_oeil'), href: '#/dehors' });
     return list;
   });
-
-  const tv = $derived(cfg.salon?.tv);
-  const speaker = $derived(cfg.salon?.speaker);
-  const tvOn = $derived(value(tv, 'power') === true);
-  const playing = $derived(value(speaker, 'playing') === true);
-  const aqi = $derived(value(out.air, 'aqi'));
-  const aqiWord = $derived(
-    aqi == null
-      ? '—'
-      : aqi <= 20
-        ? t('maison.air.tres_bon')
-        : aqi <= 40
-          ? t('maison.air.bon')
-          : aqi <= 60
-            ? t('maison.air.moyen')
-            : aqi <= 80
-              ? t('maison.air.mediocre')
-              : t('maison.air.mauvais'),
-  );
-  const bell = $derived((cfg.favorites?.cameras ?? [])[0]);
-
-  // The last real passage at the door (the history knows; the live value
-  // is refreshed every few seconds whatever happens).
-  let passage = $state(null);
-  onMount(() => {
-    const refresh = () => bell && lastSeen(bell.id).then((ts) => (passage = ts));
-    const t = setInterval(refresh, 120_000);
-    return () => clearInterval(t);
-  });
-  $effect(() => {
-    if (bell) lastSeen(bell.id).then((ts) => (passage = ts));
-  });
 </script>
 
 <div class="accueil">
-  <SkyHero />
+  <SkyHero><PlanPreview /></SkyHero>
 
   {#if modes.length}
     <div class="modes" role="radiogroup" aria-label={t('maison.accueil.mode_maison')}>
@@ -160,7 +119,7 @@
       {#if talkers.length}
         <span class="sep" aria-hidden="true"></span>
         <button class="hush" class:on={quiet} aria-pressed={quiet} onclick={toggleQuiet} title={quiet ? t('maison.accueil.sonos_reparle') : t('maison.accueil.sonos_coupe')}>
-          <Icon name={quiet ? 'volume-off' : 'speaker'} size={16} />{quiet && quietUntil ? t('maison.accueil.sonos_muette_jusqua', { time: new Date(quietUntil).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) }) : t('maison.accueil.sonos_muette')}
+          <Icon name={quiet ? 'volume-off' : 'speaker'} size={16} />{quiet && quietUntil ? t('maison.accueil.sonos_muette_jusqua', { time: new Date(quietUntil).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', timeZone: HOUSE_TZ }) }) : t('maison.accueil.sonos_muette')}
         </button>
       {/if}
     </div>
@@ -174,78 +133,24 @@
     {/each}
   </section>
 
-  <div class="grid">
-    <section class="card lights">
-      <div class="card-head">
-        <h2><Icon name="light" size={18} />{t('maison.accueil.lumieres')} <span class="count">{litCount ? t('maison.accueil.allumees', { count: litCount }) : t('maison.accueil.tout_eteint')}</span></h2>
-        <a class="more" href="#/pieces" aria-label={t('maison.accueil.toutes_pieces')}><Icon name="arrow-top-right" size={18} /></a>
-      </div>
-      <div class="tiles">
-        {#each lights as l (l.id)}
-          <LightTile id={l.id} name={l.name} icon={l.icon} also={l.also ?? []} />
-        {/each}
-      </div>
-      {#if mood}
-        <div class="moods">
-          <div class="moods-head">
-            <span class="moods-title"><Icon name="palette" size={16} />{t('maison.accueil.ambiance')}</span>
-            <div class="rooms" role="group" aria-label={t('maison.accueil.piece')}>
-              {#each moodRooms as r (r.name)}
-                <button class:on={r.name === mood.name} onclick={() => pickRoom(r.name)} aria-pressed={r.name === mood.name}>{r.name}</button>
-              {/each}
-            </div>
-          </div>
-          <AmbiancePicker lights={mood.lamps} label={mood.name} />
-        </div>
-      {/if}
-    </section>
+  <AccueilBadges />
 
-    <div class="side">
-      <EnergyCard />
-      <Routines />
+  <div class="sections">
+    <div class="col">
+      <WeatherNow />
+      <WeekWeather />
+      <HeatingBar />
+      <TabletteRows />
     </div>
 
-    <section class="card climate">
-      <div class="card-head"><h2><Icon name="air-conditioner" size={18} />{t('maison.accueil.clim')}</h2></div>
-      <div class="clims">
-        {#each cfg.favorites?.climate ?? [] as c (c.id)}
-          <ClimateCard id={c.id} name={c.name} />
-        {/each}
+    <div class="col">
+      <div class="bins-cam">
+        <BinsCard />
+        {#if camera}<CameraCard id={camera.id} name={camera.name} />{/if}
       </div>
-    </section>
-
-    {#if bell}
-      <section class="card doorbell">
-        <div class="card-head">
-          <h2><Icon name="bell" size={18} />{t('maison.accueil.devant_porte')}</h2>
-          <a class="more" href="#/cameras" aria-label={t('maison.accueil.toutes_cameras')}><Icon name="arrow-top-right" size={18} /></a>
-        </div>
-        <CameraTile id={bell.id} name={bell.name} refresh={15} />
-        <p class="muted small">{passage ? t('maison.accueil.dernier_passage', { when: relative(passage, home.now) }) : t('maison.accueil.personne')}</p>
-      </section>
-    {/if}
-
-    <a class="card remote" href="#/salon">
-      <span class="tv-object" aria-hidden="true">
-        <span class="screen" class:lit={tvOn}></span>
-        <span class="stand"></span>
-      </span>
-      <span class="remote-text">
-        <strong>{t('maison.accueil.telecommande')}</strong>
-        <span class="muted">{tvOn ? t('maison.accueil.tele_allumee') : t('maison.accueil.tele_veille')}{playing ? ` · ${t('maison.accueil.son_joue')}` : ''}</span>
-      </span>
-      <span class="go"><Icon name="arrow-top-right" size={20} /></span>
-    </a>
-
-    <a class="card outside" href="#/dehors">
-      <div class="card-head"><h2><Icon name="flower-outline" size={18} />{t('maison.accueil.dehors')}</h2><span class="more" aria-hidden="true"><Icon name="arrow-top-right" size={18} /></span></div>
-      <div class="facts">
-        <div><small>{t('maison.accueil.air')}</small><b>{aqiWord}</b></div>
-        <div><small>UV</small><b class="num">{num(value(out.air, 'uv_index'), 0)}</b></div>
-        <div><small>{t('maison.accueil.humidite')}</small><b class="num">{value(out.weather, 'humidity') != null ? `${num(value(out.weather, 'humidity'))} %` : '—'}</b></div>
-        <div><small>{t('maison.accueil.piscine')}</small><b class="num">{value(out.pool, 'temperature') != null ? `${num(value(out.pool, 'temperature'), 1)}°` : '—'}</b></div>
-      </div>
-    </a>
+      {#if out.pool}<PoolCard />{/if}
+      <BatteryGauge />
+    </div>
   </div>
 </div>
 
@@ -311,232 +216,58 @@
     font-size: 14px;
   }
 
-  .grid {
+  /* La grille à deux colonnes de la tablette : deux colonnes égales,
+     gouttière de 32 px, l'ensemble centré. Le contenu de la page peut être
+     plus large que 928 px : sans le centrage, les deux colonnes restaient
+     collées à gauche en laissant un grand vide à droite (on croyait à une
+     troisième colonne manquante). */
+  .sections {
     display: grid;
-    grid-template-columns: repeat(12, minmax(0, 1fr));
-    gap: 20px;
+    gap: 32px;
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    max-width: 464px;
+    margin-inline: auto;
+  }
+
+  .col {
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  /* Poubelles empilées à gauche, caméra à droite : le « horizontal-stack »
+     de la tablette. La caméra prend la place restante. */
+  .bins-cam {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
   }
 
-  .lights {
-    grid-column: span 8;
+  /* Deux colonnes dès qu'elles tiennent vraiment (2 × 464 + 32 = 960 px de
+     contenu, soit ~1100 px de fenêtre avec la barre latérale) : en dessous,
+     deux colonnes de 360 px ne se lisent pas. Une seule colonne, bornée à
+     464 px et centrée, dans tous les autres cas. */
+  @media (min-width: 1100px) {
+    .sections {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-width: 960px;
+    }
   }
 
-  .side {
-    grid-column: span 4;
-  }
-
-  .climate {
-    grid-column: span 7;
-  }
-
-  .doorbell {
-    grid-column: span 5;
-    grid-row: span 2;
-  }
-
-  .remote {
-    grid-column: span 3;
-  }
-
-  .outside {
-    grid-column: span 4;
-  }
-
-  .moods {
-    grid-template-columns: minmax(0, 1fr);
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid var(--line);
-    display: grid;
-    gap: 12px;
-  }
-
-  .moods-head {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 10px 14px;
-    flex-wrap: wrap;
-  }
-
-  .moods-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-weight: 700;
-    font-size: 14px;
-  }
-
-  .rooms {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .rooms button {
-    flex: none;
-    border: 0;
-    border-radius: 999px;
-    padding: 6px 12px;
-    font: inherit;
-    font-size: 13px;
-    font-weight: 650;
-    background: var(--surface-2);
-    color: var(--ink-3);
-    cursor: pointer;
-  }
-
-  .rooms button.on {
-    background: var(--warm-soft);
-    color: var(--warm-ink);
-  }
-
-  .count {
-    font-weight: 550;
-    color: var(--ink-3);
-    margin-left: 4px;
-  }
-
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .clims {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+  /* Sur un téléphone, les poubelles et la caméra s'empilent : deux
+     vignettes de 160 px de large ne se lisent pas. */
+  @media (max-width: 520px) {
+    .bins-cam {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .small {
     font-size: 13px;
     margin-top: 10px;
-  }
-
-  .remote {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 14px;
-    color: inherit;
-    text-decoration: none;
-    min-height: 168px;
-    align-content: space-between;
-    transition: transform 0.2s var(--ease);
-  }
-
-  .remote:hover,
-  .outside:hover {
-    transform: translateY(-2px);
-  }
-
-  .tv-object {
-    grid-column: 1 / -1;
-    display: grid;
-    justify-items: center;
-  }
-
-  .screen {
-    width: 96px;
-    height: 56px;
-    border-radius: 8px;
-    background: #171c28;
-    box-shadow: inset 0 0 0 3px #2a3142;
-    transition: background 0.4s;
-  }
-
-  .screen.lit {
-    background: linear-gradient(135deg, #5fb4f0, #8f8cf5 55%, #f0a53a);
-    box-shadow: inset 0 0 0 3px #2a3142, 0 8px 26px -6px #8f8cf5aa;
-  }
-
-  .stand {
-    width: 30px;
-    height: 6px;
-    border-radius: 0 0 6px 6px;
-    background: #2a3142;
-  }
-
-  .remote-text {
-    display: grid;
-  }
-
-  .remote-text strong {
-    font-size: 18px;
-  }
-
-  .remote-text span {
-    font-size: 13px;
-  }
-
-  .go {
-    align-self: end;
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    background: var(--surface-2);
-    display: grid;
-    place-items: center;
-    color: var(--ink-2);
-  }
-
-  .outside {
-    color: inherit;
-    text-decoration: none;
-    transition: transform 0.2s var(--ease);
-  }
-
-  .facts {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-  }
-
-  .facts small {
-    display: block;
-    font-size: 11px;
-    color: var(--ink-3);
-    font-weight: 650;
-  }
-
-  .facts b {
-    font-size: 17px;
-    font-weight: 650;
-  }
-
-  @media (max-width: 1180px) {
-    .lights,
-    .climate {
-      grid-column: span 12;
-    }
-
-    .side,
-    .doorbell {
-      grid-column: span 6;
-      grid-row: auto;
-    }
-
-    .remote,
-    .outside {
-      grid-column: span 6;
-    }
-  }
-
-  @media (max-width: 760px) {
-    .grid > * {
-      grid-column: span 12 !important;
-    }
-
-    .tiles {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    .clims {
-      grid-template-columns: 1fr;
-    }
   }
 </style>

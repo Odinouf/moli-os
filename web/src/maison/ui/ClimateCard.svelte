@@ -1,20 +1,28 @@
 <script>
   import { onMount } from 'svelte';
-  import { device, value, reachable, num, act } from '../lib/home.svelte.js';
+  import { device, value, reachable, num, act, setpointKey as setpointKeyOf, historyOfAny } from '../lib/home.svelte.js';
   import { energy, useEnergy, watts, euros } from '../lib/energy-live.svelte.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
 
   let { id, name } = $props();
 
-  const MIN = 16;
-  const MAX = 30;
   const d = $derived(device(id));
-  const on = $derived(value(id, 'on') === true);
-  const temp = $derived(value(id, 'temperature'));
-  const target = $derived(value(id, 'target_temperature'));
-  const mode = $derived(value(id, 'mode'));
+  // A split states its setpoint as `target_temperature`; a thermostatic valve
+  // (a TRV) states it the ZCL way, as `occupied_heating_setpoint`. Whichever
+  // the device carries is the one the card drives.
+  const setpointKey = $derived(setpointKeyOf(d) ?? 'occupied_heating_setpoint');
+  const heating = $derived(setpointKey === 'occupied_heating_setpoint');
+  const temp = $derived(value(id, 'temperature') ?? (heating ? value(id, 'local_temperature') : null));
+  const target = $derived(value(id, setpointKey));
+  const mode = $derived(heating ? value(id, 'system_mode') : value(id, 'mode'));
+  // A valve is « on » when its mode is not `off`; a split, when its `on` bit is.
+  const on = $derived(heating ? mode != null && mode !== 'off' : value(id, 'on') === true);
   const outdoor = $derived(value(id, 'outdoor_temperature'));
+  // The dial's scale follows the device's own spec, not a fixed guess.
+  const spec = $derived(d?.points.find((p) => p.key === setpointKey)?.kind ?? {});
+  const MIN = $derived(typeof spec.min === 'number' ? spec.min : heating ? 4 : 16);
+  const MAX = $derived(typeof spec.max === 'number' ? spec.max : heating ? 35 : 30);
 
   // What it draws, when a measured circuit feeds it (Daikin units do not
   // measure themselves).
@@ -32,8 +40,8 @@
   const monthCost = $derived(costOf('month'));
   // The circuit feeds something else too (« PAC salon + pompe piscine »).
   const shared = $derived(!!feeder && (feeder.feeds.length > 1 || feeder.name.includes('+')));
-  const writable = $derived(d?.points.some((p) => p.key === 'target_temperature' && p.access?.write));
-  const STEP = 0.5;
+  const writable = $derived(d?.points.some((p) => p.key === setpointKey && p.access?.write));
+  const STEP = $derived(typeof spec.step === 'number' ? spec.step : 0.5);
 
   // Taps on − / + and drags on the dial add up; one order leaves once the
   // finger rests (each order re-reads the unit and sends all its settings: no
@@ -62,7 +70,7 @@
       wanted = null;
       return;
     }
-    const done = await act(`${id}/target_temperature`, v, t('commun.clim.label_consigne', { name }));
+    const done = await act(`${id}/${setpointKey}`, v, t('commun.clim.label_consigne', { name }));
     // Shown until the unit reports it (or gives up on it).
     if (done !== 'ok') wanted = null;
     else setTimeout(() => wanted === v && (wanted = null), 15_000);
@@ -113,11 +121,17 @@
   async function power() {
     // A setpoint just dragged leaves first: the unit starts on it.
     if (!on && wanted != null) await flush();
-    act(`${id}/on`, !on, t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
+    // A valve has no boolean `on`: it takes a `system_mode`, off or heat.
+    if (heating) act(`${id}/system_mode`, on ? 'off' : 'heat', t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
+    else act(`${id}/on`, !on, t(on ? 'commun.clim.label_arret' : 'commun.clim.label_marche', { name }));
   }
-  const setMode = (key) => act(`${id}/mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }));
+  // A split takes a mode (`froid`, `chaud`…); a valve takes `system_mode`.
+  const setMode = (key) =>
+    heating
+      ? act(`${id}/system_mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }))
+      : act(`${id}/mode`, key, t('commun.action', { label: name, action: modeLabel(key).toLowerCase() }));
 
-  // The keys are the unit's modes (sent as they are); `label` is a catalogue key.
+  // A split's modes (sent as they are); `label` is a catalogue key.
   const MODES = {
     froid: { label: 'commun.clim.mode.froid', icon: 'snowflake', tone: 'cool' },
     chaud: { label: 'commun.clim.mode.chaud', icon: 'fire', tone: 'warm' },
@@ -125,9 +139,18 @@
     déshumidification: { label: 'commun.clim.mode.deshumidification', icon: 'humidity', tone: 'cool' },
     ventilation: { label: 'commun.clim.mode.ventilation', icon: 'fan', tone: 'good' },
   };
+  // A valve's own modes, as ZCL states them.
+  const HEAT_MODES = {
+    off: { label: 'commun.clim.mode.eteint', icon: 'power', tone: 'good' },
+    heat: { label: 'commun.clim.mode.chaud', icon: 'fire', tone: 'warm' },
+    auto: { label: 'commun.clim.mode.auto', icon: 'air-conditioner', tone: 'good' },
+  };
+  const table = $derived(heating ? HEAT_MODES : MODES);
+  // A valve's modes come from its own `system_mode` enum; a split keeps the five.
+  const modes = $derived(heating ? (d?.points.find((p) => p.key === 'system_mode')?.kind?.values ?? ['off', 'heat', 'auto']) : Object.keys(MODES));
   /** A mode said in the house's language (an unknown one: as the unit says it). */
-  const modeLabel = (key) => (MODES[key] ? t(MODES[key].label) : (key ?? '—'));
-  const m = $derived(MODES[mode] ? { ...MODES[mode], label: modeLabel(mode) } : { label: mode ?? '—', icon: 'air-conditioner', tone: 'good' });
+  const modeLabel = (key) => (table[key] ? t(table[key].label) : (key ?? '—'));
+  const m = $derived(table[mode] ? { ...table[mode], label: modeLabel(mode) } : { label: mode ?? '—', icon: 'air-conditioner', tone: 'good' });
 
   // A 270° ring: the target as a bead, the room temperature in the middle.
   const R = 62;
@@ -175,7 +198,13 @@
         <strong class="num">{num(wanted, wanted % 1 ? 1 : 0)}<small>°</small></strong>
         <span>{t('commun.clim.consigne')}</span>
       {:else}
-        <strong class="num">{num(temp, 0)}<small>°</small></strong>
+        <button
+          class="temp live"
+          onclick={() => historyOfAny(id, ['temperature', 'local_temperature'])}
+          onpointerdown={(e) => e.stopPropagation()}
+          title={t('maison.historique.ouvrir', { name: `${name} · ${t('commun.clim.temp_piece')}` })}
+          aria-label={t('maison.historique.ouvrir', { name: `${name} · ${t('commun.clim.temp_piece')}` })}
+        ><strong class="num">{num(temp, 0)}<small>°</small></strong></button>
         {#if shownTarget != null}<span>{t('commun.clim.consigne_val', { temp: num(shownTarget, shownTarget % 1 ? 1 : 0) })}</span>{/if}
       {/if}
     </div>
@@ -193,7 +222,8 @@
           <button onclick={() => nudge(STEP)} aria-label={t('commun.clim.plus_chaud')} disabled={shownTarget >= MAX}>+</button>
         </div>
         <div class="modes" role="group" aria-label={t('commun.clim.mode')}>
-          {#each Object.entries(MODES) as [key, it] (key)}
+          {#each modes as key (key)}
+            {@const it = table[key] ?? { label: key, icon: 'radiator' }}
             <button class:active={mode === key} onclick={() => setMode(key)} title={t(it.label)} aria-label={t(it.label)} aria-pressed={mode === key}>
               <Icon name={it.icon} size={16} />
             </button>
@@ -365,6 +395,30 @@
     color: var(--ink-3);
     font-weight: 600;
     margin-top: 4px;
+  }
+
+  /* La température lue (pas la consigne) ouvre son historique. Le cercle
+     reste la commande : seul le chiffre change de geste. */
+  .reading .temp.live {
+    border: 0;
+    padding: 0 6px;
+    margin: 0 -6px;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .reading .temp.live:hover {
+      background: color-mix(in srgb, var(--ink) 8%, transparent);
+    }
+  }
+
+  .reading .temp.live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 
   .facts {
