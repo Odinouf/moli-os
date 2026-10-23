@@ -11,13 +11,16 @@
   import Accueil from './pages/Accueil.svelte';
   import Salon from './pages/Salon.svelte';
   import Pieces from './pages/Pieces.svelte';
+  import Chauffage from './pages/Chauffage.svelte';
   import Plan from './pages/Plan.svelte';
   import Cameras from './pages/Cameras.svelte';
   import Energie from './pages/Energie.svelte';
   import Impression from './pages/Impression.svelte';
   import Dehors from './pages/Dehors.svelte';
+  import Wifi from './pages/Wifi.svelte';
   import Moli from './pages/Moli.svelte';
   import MoliSheet from './moli/MoliSheet.svelte';
+  import HistorySheet from './ui/HistorySheet.svelte';
   import Automatismes from './pages/Automatismes.svelte';
   import Systeme from './pages/Systeme.svelte';
   import Parler from './pages/Parler.svelte';
@@ -43,6 +46,7 @@
     { path: 'moli', name: 'Moli', orb: true },
     { path: 'salon', label: 'commun.nav.salon', icon: 'remote' },
     { path: 'pieces', label: 'commun.nav.pieces', icon: 'light-group' },
+    { path: 'chauffage', label: 'commun.nav.chauffage', icon: 'radiator' },
     { path: 'plan', label: 'commun.nav.plan', icon: 'home-roof' },
     { path: 'carte', label: 'commun.nav.carte', icon: 'map' },
     { path: 'cameras', label: 'commun.nav.cameras', icon: 'cctv' },
@@ -50,6 +54,7 @@
     { path: 'energie', label: 'commun.nav.energie', icon: 'bolt' },
     { path: 'impression', label: 'commun.nav.impression', icon: 'printer3d' },
     { path: 'dehors', label: 'commun.nav.dehors', icon: 'flower-outline' },
+    { path: 'wifi', label: 'commun.nav.wifi', icon: 'wifi' },
     { path: 'automatismes', label: 'commun.nav.automatismes', icon: 'robot' },
     { path: 'infra', label: 'commun.nav.infra', icon: 'server' },
   ];
@@ -147,6 +152,8 @@
       <Salon />
     {:else if page === 'pieces'}
       <Pieces />
+    {:else if page === 'chauffage'}
+      <Chauffage />
     {:else if page === 'plan'}
       <Plan />
     {:else if page === 'carte'}
@@ -165,6 +172,8 @@
       <Impression />
     {:else if page === 'dehors'}
       <Dehors />
+    {:else if page === 'wifi'}
+      <Wifi />
     {:else if page === 'moli'}
       <Moli />
     {:else if page === 'automatismes'}
@@ -194,6 +203,11 @@
 
   {#if moliOpen}
     <MoliSheet onclose={() => (moliOpen = false)} />
+  {/if}
+
+  {#if hub.chart}
+    <!-- Le même état que l'Atelier : un chiffre tapé ouvre son historique. -->
+    <HistorySheet point={hub.chart} onclose={() => (hub.chart = null)} />
   {/if}
 
   {#if home.held}
