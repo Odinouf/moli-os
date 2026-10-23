@@ -10,6 +10,7 @@ use std::time::Duration;
 use moli_core::{Access, Device, Kind, PointSpec, Semantic, Value};
 use moli_runtime::media::{Image, SnapshotSource};
 use moli_runtime::{BoxFuture, CommandRequest, Driver, DriverCtx};
+use anyhow::Context;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde::Deserialize;
 
@@ -44,6 +45,12 @@ pub struct Config {
     /// port).
     #[serde(default = "default_api")]
     pub api: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Name of the environment variable holding the password (never the
+    /// password itself).
+    #[serde(default)]
+    pub password_env: Option<String>,
 }
 
 fn default_api() -> String {
@@ -354,6 +361,13 @@ async fn run(config: &Config, ctx: &mut DriverCtx) -> anyhow::Result<()> {
     // Headroom for any message on the subscribed topics (`stats` grows
     // with the number of cameras).
     options.set_max_packet_size(256 * 1024, 16 * 1024);
+    if let Some(username) = &config.username {
+        let password = match &config.password_env {
+            Some(var) => std::env::var(var).with_context(|| format!("env var {var} not set"))?,
+            None => String::new(),
+        };
+        options.set_credentials(username, password);
+    }
     let (client, mut events) = AsyncClient::new(options, 32);
     let base = config.base_topic.trim_end_matches('/').to_owned();
     let api = moli_net::upnp::Location::parse(&config.api);
@@ -477,6 +491,17 @@ fn reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_reads_mqtt_credentials() {
+        let c: Config =
+            serde_json::from_str(r#"{"username":"moli","password_env":"MOLI_Z2M_PASSWORD"}"#)
+                .unwrap();
+        assert_eq!(c.username.as_deref(), Some("moli"));
+        assert_eq!(c.password_env.as_deref(), Some("MOLI_Z2M_PASSWORD"));
+        assert_eq!(c.host, "127.0.0.1");
+        assert_eq!(c.port, 1883);
+    }
 
     #[test]
     fn topics_become_points() {

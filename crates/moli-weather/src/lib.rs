@@ -311,7 +311,7 @@ async fn fetch_forecast(latitude: f64, longitude: f64) -> anyhow::Result<Json> {
          cloud_cover,wind_speed_10m,is_day\
          &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,\
          precipitation_probability_max,wind_speed_10m_max,sunrise,sunset\
-         &forecast_hours=25&forecast_days=7&timezone=auto"
+         &forecast_hours=25&forecast_days=8&timezone=auto"
     );
     let w = get_json(&path, MAX_FORECAST).await?;
     anyhow::ensure!(w["hourly"]["time"].is_array(), "open-meteo: no hours");
