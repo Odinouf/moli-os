@@ -117,6 +117,7 @@
   "systeme.infra.a_voir_one": "{count} point à voir",
   "systeme.infra.a_voir_other": "{count} points à voir",
   "systeme.infra.tout_va_bien": "Tout va bien",
+  "systeme.infra.redemarre": "Redémarré {when}",
   "systeme.infra.alerte.processeur": "Processeur à {temp} °C",
   "systeme.infra.alerte.memoire": "Mémoire pleine à {pct} %",
   "systeme.infra.alerte.echange": "Mémoire d’échange pleine ({pct} %) : la machine manque de mémoire",

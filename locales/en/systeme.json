@@ -117,6 +117,7 @@
   "systeme.infra.a_voir_one": "{count} thing to check",
   "systeme.infra.a_voir_other": "{count} things to check",
   "systeme.infra.tout_va_bien": "All good",
+  "systeme.infra.redemarre": "Restarted {when}",
   "systeme.infra.alerte.processeur": "Processor at {temp} °C",
   "systeme.infra.alerte.memoire": "Memory {pct}% full",
   "systeme.infra.alerte.echange": "Swap memory full ({pct}%): the machine is running low on memory",
