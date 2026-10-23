@@ -865,6 +865,7 @@ const KINDS: &[&str] = &[
     "frigate",
     "bambu",
     "esphome",
+    "linky",
     "alexa",
     "sonos",
     "reolink",
@@ -1018,6 +1019,9 @@ fn build_driver(
             config.options.clone().try_into().with_context(context)?,
         )),
         "esphome" => Arc::new(moli_esphome::Esphome::new(
+            config.options.clone().try_into().with_context(context)?,
+        )),
+        "linky" => Arc::new(moli_linky::Linky::new(
             config.options.clone().try_into().with_context(context)?,
         )),
         "alexa" => Arc::new(moli_alexa::Alexa::new(
