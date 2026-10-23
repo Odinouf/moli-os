@@ -73,6 +73,15 @@
     return out;
   });
   const stale = $derived(infra && home.now - infra.ts > 5 * 60_000);
+
+/** A watchdog restart leaves no other trace: the hub that restarts cannot
+ *  record its own restart. Shown for a day, so « it blinked again » is
+ *  answerable after the fact. */
+const restarted = $derived.by(() => {
+  const at = infra?.health?.last_restart;
+  if (!at) return null;
+  return home.now - at < 86_400_000 ? at : null;
+});
 </script>
 
 <div class="infra">
@@ -85,6 +94,9 @@
       <span class="chip warm"><Icon name="warning" size={15} />{t('systeme.infra.a_voir', { count: issues.length })}</span>
     {:else}
       <span class="chip good"><Icon name="ok" size={15} />{t('systeme.infra.tout_va_bien')}</span>
+    {/if}
+    {#if restarted}
+      <span class="chip cool" title={t('systeme.infra.redemarre', { when: relative(restarted, home.now) })}><Icon name="repeat" size={15} />{t('systeme.infra.redemarre', { when: relative(restarted, home.now) })}</span>
     {/if}
   </header>
 
