@@ -374,6 +374,7 @@ voir §1) et `data/infra.json` (conteneurs, disques) pour le reste.
 | `deploy-lxc125.md` | Identité/accès du CT125, état initial |
 | `infra-moli.md` | Page `#/infra` du CT125 : pilote `host` (`pid: host` + `root="/host"`), script `infra-host.py` par l'API Docker, cron 1 min, redémarrage après 2 échecs de santé (garde 10 min) |
 | `version-tracking.md` | Suivi de version amont |
+| `reconciliation-lab-ct125.md` | Réconciliation du code du CT125 sur l'amont : `lab/ct125` (archive, `61c35d9`) vs `lab/ct125-rebased` (déployée, `1bae9b3`), rebase sans conflit (Stale auto-abandonné, PR #9), preuves de compilation/tests, rollback |
 | `hue-migration.md` | Pont Hue (CLIP v2, clé récoltée HA) |
 | `frigate-migration.md` | NVR Frigate (MQTT + images, purge caméras fantômes) |
 | `zwave-moli.md` | Étude Z-Wave (postponed) |
