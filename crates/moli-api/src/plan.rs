@@ -93,6 +93,12 @@ struct Floor {
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image: Option<String>,
+    /// A small copy of `image`, if the house keeps one (`.webp` next to it).
+    /// The server fills it in on `GET /api/plan` and drops it on `PUT`, so a
+    /// client that sends the plan back is understood and `plan.json` stays
+    /// what a person wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thumb: Option<String>,
     /// Width and height in cm: the floor is drawn (no image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     size: Option<[f64; 2]>,
@@ -388,7 +394,26 @@ pub(crate) async fn get(Extension(PlanDir(dir)): Extension<PlanDir>) -> Response
     };
     match tokio::fs::read(dir.join("plan.json")).await {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-            Ok(plan) => axum::Json(plan).into_response(),
+            // A floor's thumbnail, when the house keeps one: its name, next to
+            // the image, with a `.webp` extension. A dashboard drawing the
+            // plan small (the Accueil's card) then asks for the file that
+            // exists instead of trying a guess and paying a 404 on every load.
+            Ok(mut plan) => {
+                if let Some(floors) = plan.get_mut("floors").and_then(|f| f.as_array_mut()) {
+                    for floor in floors {
+                        let name = floor
+                            .get("image")
+                            .and_then(|i| i.as_str())
+                            .and_then(thumb_name);
+                        if let Some(thumb) = name
+                            && dir.join("plan").join(&thumb).exists()
+                        {
+                            floor["thumb"] = serde_json::Value::String(thumb);
+                        }
+                    }
+                }
+                axum::Json(plan).into_response()
+            }
             Err(e) => error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &moli_i18n::tr!("serveur.plan.fichier_illisible", error = e),
@@ -398,12 +423,20 @@ pub(crate) async fn get(Extension(PlanDir(dir)): Extension<PlanDir>) -> Response
     }
 }
 
+/// The thumbnail's name for an image that may have one: same stem, `.webp`.
+fn thumb_name(image: &str) -> Option<String> {
+    let stem = ["png", "jpg", "jpeg"]
+        .iter()
+        .find_map(|ext| image.strip_suffix(&format!(".{ext}")))?;
+    Some(format!("{stem}.webp"))
+}
+
 pub(crate) async fn put(
     Extension(PlanDir(dir)): Extension<PlanDir>,
     Extension(humans): Extension<Arc<Sessions>>,
     caller: Caller,
     headers: HeaderMap,
-    axum::Json(plan): axum::Json<Plan>,
+    axum::Json(mut plan): axum::Json<Plan>,
 ) -> Response {
     if !humans.is_human(&headers, &caller.key) {
         return error(
@@ -419,6 +452,10 @@ pub(crate) async fn put(
     };
     if let Err(why) = plan.check(&dir) {
         return error(StatusCode::UNPROCESSABLE_ENTITY, &why);
+    }
+    // `thumb` is the server's answer, not the house's: it is never written.
+    for floor in &mut plan.floors {
+        floor.thumb = None;
     }
     let text = match serde_json::to_string_pretty(&plan) {
         Ok(text) => text + "\n",
@@ -580,6 +617,11 @@ mod tests {
         assert!(!image_name_ok("0123456789ABCDEF.png"));
         assert!(!image_name_ok("0123456789abcdef.exe"));
         assert!(serde_json::from_value::<Plan>(json!({ "floors": [], "extra": 1 })).is_err());
+        // A thumbnail's name comes from the image's, and keeps its checks.
+        assert_eq!(thumb_name("0123456789abcdef.png").as_deref(), Some("0123456789abcdef.webp"));
+        assert_eq!(thumb_name("0123456789abcdef.jpeg").as_deref(), Some("0123456789abcdef.webp"));
+        assert_eq!(thumb_name("0123456789abcdef.webp"), None);
+        assert_eq!(thumb_name("0123456789abcdef.svg"), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
