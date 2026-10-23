@@ -82,10 +82,6 @@
   "salon.cameras.rien": "Rien de signalé depuis 24 h.",
 
   "salon.evenement.sonnette": "On a sonné",
-  "salon.evenement.personne": "Personne",
-  "salon.evenement.vehicule": "Véhicule",
-  "salon.evenement.animal": "Animal",
-  "salon.evenement.colis": "Colis",
   "salon.evenement.mouvement": "Mouvement",
 
   "salon.camera.agrandir": "{nom} : agrandir",

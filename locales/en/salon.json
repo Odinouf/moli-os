@@ -82,10 +82,6 @@
   "salon.cameras.rien": "Nothing to report in the last 24 h.",
 
   "salon.evenement.sonnette": "Someone rang",
-  "salon.evenement.personne": "Person",
-  "salon.evenement.vehicule": "Vehicle",
-  "salon.evenement.animal": "Animal",
-  "salon.evenement.colis": "Package",
   "salon.evenement.mouvement": "Motion",
 
   "salon.camera.agrandir": "{nom}: enlarge",
