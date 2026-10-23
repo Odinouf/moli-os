@@ -1,0 +1,30 @@
+[integration]
+id = "linky"
+name = "Compteur Linky (via Home Assistant)"
+# Le compteur Enedis lui-même ne parle pas à Moli : une automatisation Home
+# Assistant republie ses grandeurs (index, puissance, Tempo, coût) sous
+# `moli/linky/#`, et ce driver les lit. Aucune installation solaire n'est
+# importée : seules les valeurs mesurées côté HA le sont.
+brands = ["Enedis"]
+models = ["Linky"]
+transport = "mqtt"
+driver = "linky"
+crate = "moli-linky"
+
+[discovery]
+# Les grandeurs viennent des messages retenus publiés par HA, pas du réseau.
+mdns = []
+ssdp = []
+# Le broker MQTT (celui de HA, Mosquitto).
+ports = [1883]
+
+[needs]
+# Un mot de passe de broker, s'il y en a un, vient de la variable
+# d'environnement nommée par `password_env` : jamais du coffre, jamais ici.
+secrets = []
+vars = []
+options = ["host"]
+
+[origin]
+reused = "Topics MQTT publiés par une automatisation Home Assistant (moli/linky/#)"
+author = "agent"
