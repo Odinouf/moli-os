@@ -129,7 +129,7 @@ puis `os.replace`. Aucun lecteur ne voit jamais un JSON tronqué.
   ],
   "backups": [],
   "failed": [],
-  "health": { "ok": true, "last_restart": 1792668189000, "restarts": 1, "paused": false }
+  "health": { "recent_restart": false, "last_restart": 1792668189000, "restarts": 1, "paused": false }
 }
 ```
 
@@ -139,9 +139,13 @@ Les quatre tableaux sont **toujours présents**, même vides — `Infra.svelte` 
 
 `health` dit ce que le watchdog sait de **ce passage** : `last_restart` (ms, `null` si
 jamais), `restarts` (total depuis l'installation), `paused` (drapeau `/var/lib/moli-infra/pause`)
-et `ok` (aucun redémarrage dans les 10 dernières minutes). Sans lui, un redémarrage par
-surveillance ne laisse **aucune trace lisible** : le hub qui redémarre ne journalise pas son
-propre redémarrage, et l'humain ne voit qu'un trou dans les courbes 6 h de `#/infra`.
+et `recent_restart` (**le watchdog a redémarré le hub il y a moins de 10 min**). Ce dernier
+n'est **pas** un verdict de santé : juste après un redémarrage de secours réussi le hub sert
+normalement et le drapeau reste vrai dix minutes. La vivacité se lit sur `/api/health`, que la
+page interroge déjà. S'appeler `ok` ferait passer une reprise réussie pour une alerte.
+Sans ce bloc, un redémarrage par surveillance ne laisse **aucune trace lisible** : le hub qui
+redémarre ne journalise pas son propre redémarrage, et l'humain ne voit qu'un trou dans les
+courbes 6 h de `#/infra`.
 
 ## 3. Surveillance de santé et redémarrage (C3)
 

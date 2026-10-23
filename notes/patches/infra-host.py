@@ -339,11 +339,18 @@ def health_state():
 
     A restart leaves no trace in the hub's own journal (it is the hub that
     restarts): without this, the human sees a silent gap in the 6 h curves.
+
+    `recent_restart` says « the watchdog restarted the hub less than ten minutes
+    ago » — *not* « the hub is unhealthy ». Right after a successful recovery the
+    hub serves fine and the flag stays true for ten minutes; naming it `ok`
+    would read as a liveness verdict and overstate the problem. Liveness belongs
+    to `/api/health`, which the page already reads.
     """
+    now = int(time.time())
     last = read_int(LAST_RESTART)
     return {
-        "ok": last == 0 or int(time.time()) - last > RESTART_COOLDOWN,
-        "last_restart": last * 1000 or None,
+        "recent_restart": last != 0 and now - last <= RESTART_COOLDOWN,
+        "last_restart": last * 1000 if last else None,
         "restarts": read_int(RESTARTS),
         "paused": os.path.exists(PAUSE),
     }
