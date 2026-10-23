@@ -1,5 +1,5 @@
 <script>
-  import { device, nameOf, reachable, since, relative, home, num } from '../lib/home.svelte.js';
+  import { device, nameOf, reachable, since, relative, home, num, historyOf } from '../lib/home.svelte.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
 
@@ -50,7 +50,10 @@
   {#if rows.length}
     <dl>
       {#each rows as r (r.p.key)}
-        <div><dt>{r.p.label || r.p.key}</dt><dd class="num">{r.text}</dd></div>
+        <div>
+          <dt>{r.p.label || r.p.key}</dt>
+          <dd class="num"><button class="live" onclick={() => historyOf(id, r.p.key)} title={t('maison.historique.ouvrir', { name: `${nameOf(id, name)} · ${r.p.label || r.p.key}` })} aria-label={t('maison.historique.ouvrir', { name: `${nameOf(id, name)} · ${r.p.label || r.p.key}` })}>{r.text}</button></dd>
+        </div>
       {/each}
     </dl>
   {:else}
@@ -84,5 +87,30 @@
     margin: 2px 0 0;
     font-size: 18px;
     font-weight: 650;
+  }
+
+  dd .live {
+    border: 0;
+    padding: 1px 5px;
+    margin: -1px -5px;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 18px;
+    font-weight: 650;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    dd .live:hover {
+      background: var(--surface-2);
+    }
+  }
+
+  dd .live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 </style>

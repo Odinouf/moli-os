@@ -1,5 +1,5 @@
 <script>
-  import { hub, device, value, reachable, nameOf, act, num, clock, home } from '../lib/home.svelte.js';
+  import { hub, device, value, reachable, nameOf, act, num, clock, home, historyOf } from '../lib/home.svelte.js';
   import { phase, PHASES, jobName, duration, cancelWord } from '../lib/printers.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
@@ -11,6 +11,7 @@
 
   const d = $derived(device(id));
   const v = (k) => value(id, k);
+  const histTitle = (k) => t('maison.historique.ouvrir', { name: `${nameOf(id)} · ${t(`salon.impression.${k}`)}` });
   const ok = $derived(reachable(id));
   const state = $derived(ok ? phase(v('state')) : 'off');
   const look = $derived(state === 'off' ? { label: t('salon.eteinte'), tone: '' } : PHASES[state]);
@@ -117,12 +118,12 @@
   </div>
 
   <div class="temps">
-    <span><small>{t('salon.impression.buse')}</small><b class="num">{temp(v('nozzle_temperature'))}</b>{#if v('nozzle_target')}<small class="num"> → {temp(v('nozzle_target'))}</small>{/if}</span>
+    <span><small>{t('salon.impression.buse')}</small>{#if typeof v('nozzle_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'nozzle_temperature')} title={histTitle('buse')} aria-label={histTitle('buse')}>{temp(v('nozzle_temperature'))}</button>{:else}<b class="num">{temp(v('nozzle_temperature'))}</b>{/if}{#if v('nozzle_target')}<small class="num"> → {temp(v('nozzle_target'))}</small>{/if}</span>
     {#if d?.points.some((p) => p.key === 'bed_temperature')}
-      <span><small>{t('salon.impression.plateau')}</small><b class="num">{temp(v('bed_temperature'))}</b>{#if v('bed_target')}<small class="num"> → {temp(v('bed_target'))}</small>{/if}</span>
+      <span><small>{t('salon.impression.plateau')}</small>{#if typeof v('bed_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'bed_temperature')} title={histTitle('plateau')} aria-label={histTitle('plateau')}>{temp(v('bed_temperature'))}</button>{:else}<b class="num">{temp(v('bed_temperature'))}</b>{/if}{#if v('bed_target')}<small class="num"> → {temp(v('bed_target'))}</small>{/if}</span>
     {/if}
     {#if d?.points.some((p) => p.key === 'chamber_temperature')}
-      <span><small>{t('salon.impression.enceinte')}</small><b class="num">{temp(v('chamber_temperature'))}</b></span>
+      <span><small>{t('salon.impression.enceinte')}</small>{#if typeof v('chamber_temperature') === 'number'}<button class="live num" onclick={() => historyOf(id, 'chamber_temperature')} title={histTitle('enceinte')} aria-label={histTitle('enceinte')}>{temp(v('chamber_temperature'))}</button>{:else}<b class="num">{temp(v('chamber_temperature'))}</b>{/if}</span>
     {/if}
   </div>
 
@@ -333,6 +334,31 @@
   .temps b {
     font-size: 16px;
     font-weight: 650;
+  }
+
+  /* La température lue par la tête ou le plateau ouvre son historique. */
+  .temps .live {
+    border: 0;
+    padding: 1px 5px;
+    margin: -1px -5px;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .temps .live:hover {
+      background: var(--surface-2);
+    }
+  }
+
+  .temps .live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 
   .tools {

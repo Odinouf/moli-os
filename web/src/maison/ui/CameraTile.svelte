@@ -83,13 +83,20 @@
 
   const EVENTS = [
     ['doorbell', 'salon.evenement.sonnette', 'bell', 'alert'],
-    ['person', 'salon.evenement.personne', 'account', 'warm'],
-    ['vehicle', 'salon.evenement.vehicule', 'car', 'cool'],
-    ['animal', 'salon.evenement.animal', 'dog', 'good'],
-    ['package', 'salon.evenement.colis', 'package', 'good'],
+    ['person', 'pilotes.frigate.personnes', 'account', 'warm'],
+    ['car', 'pilotes.frigate.voitures', 'car', 'cool'],
+    ['dog', 'pilotes.frigate.chiens', 'dog', 'good'],
+    ['cat', 'pilotes.frigate.chats', 'cat', 'good'],
+    ['bird', 'pilotes.frigate.oiseaux', 'bird', 'good'],
     ['motion', 'salon.evenement.mouvement', 'motion', ''],
   ];
-  const active = $derived(EVENTS.filter(([key]) => value(id, key) === true || (key === 'person' && Number(value(id, 'person')) > 0)));
+  // Frigate counts objects (an integer per label): a count above zero is a
+  // live event. A doorbell, a simple flag, is `true`.
+  const fired = (key) => {
+    const v = value(id, key);
+    return v === true || (typeof v === 'number' && v > 0);
+  };
+  const active = $derived(EVENTS.filter(([key]) => fired(key)));
   const online = $derived(device(id)?.online !== false);
 </script>
 

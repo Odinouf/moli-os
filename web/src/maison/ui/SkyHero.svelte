@@ -6,13 +6,15 @@
   // one). A tap opens the detail: the next day on the map, the hours and the
   // days to come.
   import { onMount } from 'svelte';
-  import { home, value, clock, greeting, num, longDate } from '../lib/home.svelte.js';
+  import { home, value, clock, num, longDate, historyOf } from '../lib/home.svelte.js';
   import { sky, watchSky, hours, outlook, localTs } from '../lib/sky.svelte.js';
   import { weatherOf } from '../lib/icons.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
   import WeatherMap from './WeatherMap.svelte';
   import SkyDetail from './SkyDetail.svelte';
+
+  let { children } = $props();
 
   const out = $derived(home.config?.outdoor ?? {});
   const w = $derived(out.weather);
@@ -47,12 +49,19 @@
 <section class="hero">
   <div class="hello">
     <p class="date">{longDate(home.now)}</p>
-    <h1>{greeting(home.now)}</h1>
     <p class="time num">{clock(home.now)}</p>
   </div>
 
+  {#if children}
+    <div class="hero-plan">{@render children()}</div>
+  {/if}
+
   {#if w}
-    <button class="sky" class:live={sky.map} onclick={() => (open = true)} aria-label={t('maison.meteo.ouvrir', { label: now.label })}>
+    <!-- Le ciel entier ouvre le détail ; la température, elle, ouvre son
+         historique. Deux boutons qui ne s'imbriquent pas : le second est
+         posé au-dessus du premier. -->
+    <div class="sky" class:live={sky.map}>
+      <button class="open" onclick={() => (open = true)} aria-label={t('maison.meteo.ouvrir', { label: now.label })}></button>
       {#if sky.map}
         <span class="space" aria-hidden="true">
           <WeatherMap map={sky.map} {hour} tx={narrow ? 0.17 : 0.34} ty={0.5} />
@@ -61,7 +70,7 @@
       <span class="now">
         <Icon path={now.icon} size={44} />
         <span class="words">
-          <strong class="num">{num(value(w, 'temperature'), 0)}°</strong>
+          <button class="temp num" onclick={() => historyOf(w, 'temperature')} title={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${t('maison.meteo.titre')} · ${t('commun.piece.temperature')}` })}>{num(value(w, 'temperature'), 0)}°</button>
           <span class="label">{now.label}</span>
           <span class="small num"
             >↑ {num(value(w, 'today_max'), 0)}° ↓ {num(value(w, 'today_min'), 0)}° ·
@@ -71,7 +80,7 @@
           {#if line}<span class="small outlook">{line}</span>{/if}
         </span>
       </span>
-    </button>
+    </div>
   {/if}
 </section>
 
@@ -91,6 +100,31 @@
 
   .hello {
     align-self: end;
+    flex: none;
+  }
+
+  /* The plan, between the date/time and the weather. It takes the free
+     space (flex-grow) and centres the card there; the width is capped so
+     the header grows by a bounded height, not all the free width. */
+  .hero-plan {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  .hero-plan :global(.plan) {
+    max-width: 436px;
+    /* the plan stands on the page here: no card surface, no inner
+       padding, no shadow — a few dozen pixels of height saved. */
+    background: none;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  /* The bare plan: a soft shadow gives it its own edge on the page. */
+  .hero-plan :global(.frame img) {
+    filter: drop-shadow(0 8px 22px rgb(23 32 56 / 18%));
   }
 
   .date {
@@ -98,17 +132,12 @@
     font-weight: 600;
   }
 
-  h1 {
-    font-size: 40px;
-    font-weight: 750;
-    letter-spacing: -0.03em;
-    line-height: 1.1;
-  }
-
   .time {
-    font-size: 22px;
-    font-weight: 400;
-    color: var(--ink-2);
+    font-size: 40px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: var(--ink);
   }
 
   .sky {
@@ -125,6 +154,54 @@
     color: inherit;
     text-align: left;
     border-radius: var(--r-lg);
+  }
+
+  /* Le ciel : une cible qui couvre toute la zone, sous la température. */
+  .sky .open {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border: 0;
+    padding: 0;
+    border-radius: var(--r-lg);
+    background: none;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .sky .open:hover {
+      background: color-mix(in srgb, var(--surface) 45%, transparent);
+    }
+  }
+
+  /* La température : au-dessus de la cible du ciel, pour ouvrir son
+     historique plutôt que le détail météo. */
+  .words .temp {
+    justify-self: start;
+    border: 0;
+    padding: 0 4px;
+    margin: 0 -4px;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 46px;
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  @media (hover: hover) {
+    .words .temp:hover {
+      background: color-mix(in srgb, var(--ink) 8%, transparent);
+    }
+  }
+
+  .words .temp:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 
   /* The map: right half, melting into the page on the left, top and
@@ -153,6 +230,9 @@
     align-items: center;
     gap: 12px;
     color: var(--sun);
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
   }
 
   .words {
@@ -204,8 +284,12 @@
       align-self: start;
     }
 
-    h1 {
-      font-size: 32px;
+    .time {
+      font-size: 34px;
+    }
+
+    .hero-plan {
+      flex: none;
     }
 
     .sky {

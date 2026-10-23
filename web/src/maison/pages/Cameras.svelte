@@ -19,12 +19,14 @@
   const current = $derived(cameras.find((c) => c.id === open));
 
   // What the camera saw today, from the history (rising edges only).
+  // The keys are Frigate's own object labels.
   const KINDS = [
     ['doorbell', 'salon.evenement.sonnette', 'bell'],
-    ['person', 'salon.evenement.personne', 'account'],
-    ['vehicle', 'salon.evenement.vehicule', 'car'],
-    ['animal', 'salon.evenement.animal', 'dog'],
-    ['package', 'salon.evenement.colis', 'package'],
+    ['person', 'pilotes.frigate.personnes', 'account'],
+    ['car', 'pilotes.frigate.voitures', 'car'],
+    ['dog', 'pilotes.frigate.chiens', 'dog'],
+    ['cat', 'pilotes.frigate.chats', 'cat'],
+    ['bird', 'pilotes.frigate.oiseaux', 'bird'],
   ];
   let seen = $state([]);
   let seenLoading = $state(false);

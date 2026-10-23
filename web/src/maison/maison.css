@@ -118,16 +118,6 @@
   margin-bottom: 16px;
 }
 
-.maison .card-head h2 {
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  color: var(--ink-2);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .maison .card-head .more {
   border: 0;
   background: var(--surface-2);

@@ -1,10 +1,12 @@
 // The family dashboard's model: the hub's live state (SSE, shared with the
 // Atelier), the home layout (/api/home), and gentle helpers on top.
 
-import { hub, connect, login, decide, refreshSession } from '../../lib/hub.svelte.js';
+import { hub, connect, login, decide, refreshSession, onHubEvent } from '../../lib/hub.svelte.js';
 import { t, locale } from '../../lib/i18n.svelte.js';
+import { roomKey, roomNamed as roomNamedIn, roomOf as roomOfIn } from './rooms.js';
+import { powerKey, isFixture, isGroup, pointHas, deviceKind } from './kinds.js';
 
-export { hub };
+export { hub, roomKey, powerKey, isFixture, isGroup, deviceKind };
 
 export const home = $state({
   /** @type {any} layout from /api/home ({} = automatic) */
@@ -37,19 +39,35 @@ export function savePref(key, value) {
 }
 
 let started = false;
+let reloadTimer = null;
+
+async function loadHome() {
+  try {
+    const res = await fetch('/api/home', { cache: 'no-store' });
+    home.config = res.ok ? await res.json() : {};
+  } catch {
+    home.config = {};
+  }
+}
+
+function scheduleHomeReload() {
+  if (reloadTimer != null) return;
+  reloadTimer = setTimeout(async () => {
+    reloadTimer = null;
+    await loadHome();
+  }, 50);
+}
 
 /** Starts the live link (once) and loads the layout. */
 export async function start() {
   if (started) return;
   started = true;
   connect();
+  onHubEvent((event) => {
+    if (event.type === 'label_changed' || event.type === 'snapshot') scheduleHomeReload();
+  });
   setInterval(() => (home.now = Date.now()), 15_000);
-  try {
-    const res = await fetch('/api/home');
-    home.config = res.ok ? await res.json() : {};
-  } catch {
-    home.config = {};
-  }
+  await loadHome();
 }
 
 export function note(text, tone = 'info') {
@@ -71,6 +89,34 @@ export function since(id, key) {
   return hub.devices[id]?.state?.[key]?.ts ?? null;
 }
 
+// ---- history -------------------------------------------------------------------
+
+/** The key a device really reports, from the names its brand may use:
+ *  `readingPoint(id, ['temperature', 'temp_current'])`. A point the device
+ *  does not have is never invented. */
+export function readingPoint(id, candidates) {
+  const d = device(id);
+  if (!d) return null;
+  return candidates.find((k) => d.points?.some((p) => p.key === k)) ?? null;
+}
+
+/** Opens the history of one reading (`hub.chart`, the same state the
+ *  Atelier uses). Nothing happens when the device or the point is absent:
+ *  a tapped figure must not open an empty sheet. */
+export function historyOf(id, key) {
+  const d = device(id);
+  if (!d || !key) return false;
+  if (!d.points?.some((p) => p.key === key)) return false;
+  hub.chart = `${id}/${key}`;
+  return true;
+}
+
+/** Opens the first reading the device really has, among `candidates`. */
+export function historyOfAny(id, candidates) {
+  const key = readingPoint(id, candidates);
+  return key ? historyOf(id, key) : false;
+}
+
 // What a sensor says, whatever its brand: Zigbee (`contact` true when
 // closed, `water_leak`), Tuya (`doorcontact_state` true when open,
 // `watersensor_state` « alarm », `pir` « pir », `battery_state` « low »).
@@ -87,7 +133,8 @@ export function doorOpen(id) {
 
 export const leak = (id) => value(id, 'water_leak') === true || value(id, 'watersensor_state') === 'alarm';
 
-export const motion = (id) => value(id, 'occupancy') === true || value(id, 'pir') === 'pir';
+export const motion = (id) =>
+  value(id, 'occupancy') === true || value(id, 'motion') === true || value(id, 'pir') === 'pir';
 
 /** A sensor's battery (not a phone's: it charges). */
 export function lowBattery(id) {
@@ -105,14 +152,44 @@ export function nameOf(id, fallback) {
   return fallback || d?.label?.name || d?.native_name || t('commun.appareil');
 }
 
-/** The point that switches the device on and off. */
-export function powerKey(d) {
-  if (!d) return null;
-  const writable = d.points.filter((p) => p.access?.write);
-  const p =
-    writable.find((p) => p.semantic === 'on_off' && p.kind.type === 'binary') ??
-    writable.find((p) => ['on', 'switch_1', 'switch', 'state'].includes(p.key));
-  return p?.key ?? null;
+/** Le nom d'un appareil tel qu'on le lit à voix haute : jamais une adresse
+ *  Zigbee ni un identifiant technique. `nameOf` reste la vérité du pilote
+ *  (l'Atelier en a besoin) ; ici on préfère la pièce, puis « Appareil ». */
+export function spokenNameOf(id, fallback) {
+  if (fallback) return fallback;
+  const d = device(id);
+  const named = d?.label?.name || d?.native_name;
+  const technical = (s) => !s || /^0x[0-9a-f]{6,}$/i.test(s) || /^[0-9a-f]{12,}$/i.test(s) || !/[a-zà-ÿ]/i.test(s);
+  if (named && !technical(named)) return named;
+  const room = d ? roomOf(d) : null;
+  return room && !technical(room) ? room : t('commun.appareil');
+}
+
+/** Les clés de point dont la maison connaît le mot : celles qu'on montre
+ *  dans une feuille d'historique, jamais un libellé anglais de pilote. */
+const POINT_WORDS = {
+  temperature: 'maison.point.temperature',
+  temp_current: 'maison.point.temperature',
+  local_temperature: 'maison.point.local_temperature',
+  humidity: 'maison.point.humidity',
+  humidity_value: 'maison.point.humidity',
+  pressure: 'maison.point.pressure',
+  battery: 'maison.point.battery',
+  voltage: 'maison.point.voltage',
+  power: 'maison.point.power',
+  cur_power: 'maison.point.power',
+  power_appart: 'maison.point.power',
+  power_residuel: 'maison.point.power',
+  occupied_heating_setpoint: 'maison.point.occupied_heating_setpoint',
+  setpoint: 'maison.point.setpoint',
+};
+
+/** Le libellé d'un point en clair : le mot de la maison s'il existe, sinon
+ *  le libellé du pilote, sinon la clé (visible, donc trouvable). */
+export function pointLabel(spec, key) {
+  const word = POINT_WORDS[key ?? spec?.key];
+  if (word) return t(word);
+  return spec?.label || key || spec?.key || '';
 }
 
 const truthy = (v) => v === true || v === 'ON' || v === 'on' || v === 1;
@@ -127,11 +204,6 @@ export function isOn(id, point = null) {
   const key = point ?? powerKey(d);
   return key ? truthy(value(id, key)) : false;
 }
-
-/** A light fixture (D12): bulbs and the relay that feeds them as one light. */
-export const isFixture = (d) => d?.model === 'Luminaire';
-/** A Hue room or zone: « toute la pièce », not a lamp. */
-export const isGroup = (d) => d?.model === 'room' || d?.model === 'zone';
 
 /** The fixture a device belongs to (its bulbs, its relay), if any. */
 export function fixtureOf(id) {
@@ -154,26 +226,23 @@ export function pending(id, point = null) {
 
 // ---- rooms ---------------------------------------------------------------------
 
-const norm = (s) =>
-  String(s ?? '')
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
+// `norm` is the dashboard's one room-name comparison (`lib/rooms.js`).
+const norm = roomKey;
 
-/** The layout's name for a room called `raw` somewhere (a bridge, the plan). */
+/** The layout's name for a room called `raw` somewhere (a bridge, the plan):
+ *  the rule lives in `lib/rooms.js`, so the rows read the same one. */
 export function roomNamed(raw) {
-  for (const room of home.config?.rooms ?? []) {
-    if ([room.name, ...(room.aliases ?? [])].some((n) => norm(n) === norm(raw))) return room.name;
-  }
-  return raw;
+  return roomNamedIn(raw, home.config?.rooms ?? []);
+}
+
+export function tempIgnored(roomName) {
+  const def = (home.config?.rooms ?? []).find((r) => r.name === roomName);
+  return new Set(def?.temperature_ignore ?? []);
 }
 
 /** The room a device is in, by the layout's names and aliases. */
 export function roomOf(d) {
-  const raw = d?.label?.room || d?.native_room;
-  return raw ? roomNamed(raw) : null;
+  return roomOfIn(d, home.config?.rooms ?? []);
 }
 
 export const protectedRoom = (name) =>
@@ -204,30 +273,59 @@ export function outletsOf(id) {
     .map(([key, name]) => ({ key, name }));
 }
 
-const LIGHTISH = /lumi|lamp|light|spot|plafon|applique|ampoule|globe|suspension|bureau|salon|cuisine|couloir|studio|véranda|veranda|entrée|chambre|toilette|combles|meuble|bulb|ceiling|desk|kitchen|hallway|bedroom|attic|fixture|lounge/i;
-/** On/off things that are not lights, whatever their bridge calls them. */
-const NOT_LIGHT = /vmc|ventil|pompe|prise|chauffe|\bfan\b|pump|heater|outlet|socket/i;
 const has = (d, key, write = false) => d.points.some((p) => p.key === key && (!write || p.access?.write));
 
 /** What a device is, for choosing how to show it. */
-export function deviceKind(d) {
-  if (!d) return 'unknown';
-  if (has(d, 'progress') && has(d, 'nozzle_temperature')) return 'printer';
-  if (d.camera) return 'camera';
-  if (has(d, 'target_temperature')) return 'climate';
-  if (has(d, 'key', true)) return 'tv';
-  if (has(d, 'playing', true) && has(d, 'volume')) return 'speaker';
-  if (has(d, 'percent_control') || (has(d, 'control', true) && d.points.find((p) => p.key === 'control')?.kind.values?.includes('open')))
-    return 'cover';
-  if (powerKey(d)) {
-    if (isGroup(d)) return 'group';
-    if (isFixture(d)) return 'light';
-    const name = d.label?.name || d.native_name;
-    if (NOT_LIGHT.test(name) || /plug/i.test(d.model ?? '')) return 'plug';
-    if (d.id.startsWith('hue:') || LIGHTISH.test(name)) return 'light';
-    return 'plug';
-  }
-  return 'sensor';
+
+// ---- the plan -------------------------------------------------------------------
+
+const PIN_ICON = { light: 'light', group: 'light-group', plug: 'power', fan: 'fan', climate: 'air-conditioner', camera: 'cctv', speaker: 'speaker', tv: 'tv', cover: 'shutter' };
+
+/** The icon a plan pin (or a token on the Plan page) shows for a device. */
+export function pinIcon(d) {
+  const kind = deviceKind(d);
+  // A valve that heats draws a radiator, not a split: both are `climate`,
+  // and only the heating one carries a setpoint and a mode.
+  if (kind === 'climate' && (pointHas(d, 'system_mode') || pointHas(d, 'occupied_heating_setpoint'))) return 'radiator';
+  if (PIN_ICON[kind]) return PIN_ICON[kind];
+  if (pointHas(d, 'smoke')) return 'fire';
+  if (pointHas(d, 'water_leak') || pointHas(d, 'watersensor_state')) return 'water';
+  if (pointHas(d, 'contact') || pointHas(d, 'doorcontact_state')) return 'door';
+  if (pointHas(d, 'occupancy') || pointHas(d, 'motion') || pointHas(d, 'pir')) return 'motion';
+  if (pointHas(d, 'temperature') || pointHas(d, 'temp_current')) return 'thermometer';
+  return 'info';
+}
+
+/** A short reading next to a plan pin. A drawn floor keeps it to power
+ *  (the temperature would crowd a floor plan that already shows fixtures). */
+export function pinReading(d, { drawn = false } = {}) {
+  const temp = value(d.id, 'temperature') ?? value(d.id, 'temp_current');
+  if (typeof temp === 'number' && deviceKind(d) !== 'climate' && !drawn) return `${num(temp, 1)}°`;
+  const p = value(d.id, 'power') ?? value(d.id, 'cur_power');
+  if (typeof p === 'number' && p >= 1) return `${num(p)} W`;
+  return null;
+}
+
+/** The point `pinReading` reads, so the figure on the plan can open it. */
+export function pinReadingPoint(d, { drawn = false } = {}) {
+  const temp = readingPoint(d.id, ['temperature', 'temp_current']);
+  if (temp && deviceKind(d) !== 'climate' && !drawn && typeof value(d.id, temp) === 'number') return temp;
+  const p = readingPoint(d.id, ['power', 'cur_power']);
+  if (p && typeof value(d.id, p) === 'number') return p;
+  return null;
+}
+
+/** A device id as the hub knows it: the plan may carry an older spelling
+ *  (a case drift after a rename), so the canonical key wins. */
+export function canonicalId(id) {
+  if (hub.devices[id]) return id;
+  const lower = String(id).toLowerCase();
+  return Object.keys(hub.devices).find((k) => k.toLowerCase() === lower) ?? id;
+}
+
+/** The device a plan id points at, tolerating that case drift. */
+export function deviceOf(id) {
+  return hub.devices[canonicalId(id)] ?? null;
 }
 
 /** Rooms with their devices sorted by kind, the layout's order first. */
@@ -401,13 +499,15 @@ export function num(v, digits = 0) {
   return Number(v).toLocaleString(locale(), { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
+export const HOUSE_TZ = 'Europe/Paris';
+
 export function clock(ts) {
-  return new Date(ts).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', timeZone: HOUSE_TZ });
 }
 
 /** « Samedi 3 octobre »: only the first letter up. */
 export function longDate(ts) {
-  const s = new Date(ts).toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long' });
+  const s = new Date(ts).toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long', timeZone: HOUSE_TZ });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -431,7 +531,7 @@ export async function lastSeen(id, keys = ['person', 'doorbell'], hours = 48) {
 }
 
 export function greeting(ts) {
-  const h = new Date(ts).getHours();
+  const h = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: HOUSE_TZ }).format(new Date(ts)));
   if (h < 5) return t('commun.salut.nuit');
   if (h < 12) return t('commun.salut.matin');
   if (h < 18) return t('commun.salut.apres_midi');
@@ -446,3 +546,17 @@ export function relative(ts, now = Date.now()) {
   if (s < 86400) return t('commun.relatif.heures', { n: Math.round(s / 3600) });
   return t('commun.relatif.jours', { n: Math.round(s / 86400) });
 }
+
+// ---- heating -------------------------------------------------------------------
+
+/** The thermostatic valves the house holds: a valve states its setpoint the
+ *  ZCL way (`system_mode` / `occupied_heating_setpoint`), never as a split's
+ *  `target_temperature`. Nothing is declared anywhere: the devices say so. */
+export function heatingValves() {
+  return Object.values(hub.devices ?? {}).filter(
+    (d) => !hidden(d.id) && (has(d, 'system_mode') || has(d, 'occupied_heating_setpoint')),
+  );
+}
+
+/** The setpoint point of a climate device, whatever it is called. */
+export const setpointKey = (d) => (has(d, 'target_temperature') ? 'target_temperature' : has(d, 'occupied_heating_setpoint') ? 'occupied_heating_setpoint' : null);

@@ -29,6 +29,9 @@
     background:
       radial-gradient(circle at 34% 28%, rgb(255 255 255 / 70%) 0 14%, transparent 15%),
       conic-gradient(from 200deg, #f5c84b, #f0a53a, #ef7f5a, #8f8cf5, #5fb4f0, #f5c84b);
+    /* The warmth is fixed: animating a filter repaints the whole layer on
+       every frame, which costs a slow tablet most of its frames. */
+    filter: saturate(1.2);
     animation: breathe 5s ease-in-out infinite;
   }
 
@@ -77,7 +80,6 @@
   @keyframes breathe {
     50% {
       transform: scale(1.05) rotate(18deg);
-      filter: saturate(1.2);
     }
   }
 

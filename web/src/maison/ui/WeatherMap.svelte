@@ -8,6 +8,7 @@
   // size: the house at (tx, ty) of the box, the hour shown (0 = now).
   import { onMount } from 'svelte';
   import { WindMap, viewAround, loadLand } from '../lib/windmap.js';
+  import { isLean } from '../lib/lean.js';
 
   let { map, hour = 0, tx = 0.5, ty = 0.5, house = true } = $props();
 
@@ -20,8 +21,19 @@
   const view = $derived(W && H && map ? viewAround(map, W, H, tx, ty) : null);
   const pin = $derived(view && map ? [((map.house[0] - view.x0) / (view.x1 - view.x0)) * W, ((map.house[1] - view.y0) / (view.y1 - view.y0)) * H] : null);
 
+  // A slow device draws the map once: the stream of particles is a
+  // repaint per frame, and a small tablet has no frame to spare. The
+  // screen still says the same thing (drawStill), just not moving.
+  function lean() {
+    return isLean({
+      deviceMemory: navigator.deviceMemory,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    });
+  }
+
   onMount(() => {
-    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const still = lean();
     // A plain copy: the drawing reads it thousands of times a frame.
     lastMap = map;
     wm = new WindMap(land, air, map ? $state.snapshot(map) : null, { still });

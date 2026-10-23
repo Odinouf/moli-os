@@ -55,9 +55,8 @@
 </script>
 
 {#if list.length}
-  <section class="card routines">
+  <section class="card routines" aria-label={t('automatismes.routines.titre')}>
     <div class="card-head">
-      <h2><Icon name="hand" size={18} />{t('automatismes.routines.titre')}</h2>
       <a class="more" href="#/automatismes" aria-label={t('automatismes.routines.tous')}><Icon name="arrow-top-right" size={18} /></a>
     </div>
     <div class="buttons">

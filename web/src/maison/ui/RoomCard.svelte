@@ -1,5 +1,5 @@
 <script>
-  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf } from '../lib/home.svelte.js';
+  import { hub, value, act, isOn, powerKey, protectedRoom, num, nameOf, spokenNameOf, deviceKind, lampsOf, doorOpen, leak, motion, lowBattery, unpowered, isFixture, note, reachable, quiet, outletsOf, tempIgnored, historyOf, readingPoint } from '../lib/home.svelte.js';
   import { t } from '../../lib/i18n.svelte.js';
   import Icon from './Icon.svelte';
   import LightTile from './LightTile.svelte';
@@ -22,8 +22,9 @@
     // An appliance that is no button: what it draws, nothing when unplugged.
     if (quiet(d.id)) {
       if (d.online === false) return every ? [{ tone: '', icon: 'alert', text: t('commun.piece.hors_ligne', { name: nameOf(d.id) }) }] : [];
-      const w = value(d.id, 'cur_power') ?? value(d.id, 'power');
-      if (typeof w === 'number' && w >= 3) return [{ tone: 'warm', icon: 'power', text: t('commun.piece.consomme', { name: nameOf(d.id), watts: num(w) }) }];
+      const wKey = readingPoint(d.id, ['cur_power', 'power']);
+      const w = wKey ? value(d.id, wKey) : null;
+      if (typeof w === 'number' && w >= 3) return [{ tone: 'warm', icon: 'power', text: t('commun.piece.consomme', { name: nameOf(d.id), watts: num(w) }), point: wKey ? `${d.id}/${wKey}` : null }];
       return every ? [{ tone: '', icon: 'power', text: t('commun.piece.au_repos', { name: nameOf(d.id) }) }] : [];
     }
     // A silent sensor's last readings are old news: say it is silent.
@@ -39,10 +40,12 @@
     if (open === true) out.push({ tone: 'warm', icon: 'door-open', text: t('commun.piece.ouverte', { name: nameOf(d.id) }) });
     else if (open === false) out.push({ tone: '', icon: 'door-closed', text: t('commun.piece.fermee', { name: nameOf(d.id) }) });
     // The temperature is the room's, in the head.
-    const hum = v('humidity') ?? v('humidity_value');
-    if (typeof hum === 'number') out.push({ tone: '', icon: 'humidity', text: t('commun.pourcent', { n: num(hum) }) });
-    const co2 = v('co2_value') ?? v('co2');
-    if (typeof co2 === 'number') out.push({ tone: co2 > 1200 ? 'warm' : '', icon: 'leaf', text: `CO₂ ${num(co2)} ppm` });
+    const humKey = readingPoint(d.id, ['humidity', 'humidity_value']);
+    const hum = humKey ? v(humKey) : null;
+    if (typeof hum === 'number') out.push({ tone: '', icon: 'humidity', text: t('commun.pourcent', { n: num(hum) }), point: `${d.id}/${humKey}` });
+    const co2Key = readingPoint(d.id, ['co2_value', 'co2']);
+    const co2 = co2Key ? v(co2Key) : null;
+    if (typeof co2 === 'number') out.push({ tone: co2 > 1200 ? 'warm' : '', icon: 'leaf', text: `CO₂ ${num(co2)} ppm`, point: `${d.id}/${co2Key}` });
     if (motion(d.id)) out.push({ tone: 'warm', icon: 'motion', text: t('commun.piece.presence') });
     if (lowBattery(d.id)) out.push({ tone: 'alert', icon: 'alert', text: t('commun.piece.pile_faible', { name: nameOf(d.id) }) });
     if (deviceKind(d) === 'camera') out.push({ tone: 'cool', icon: 'cctv', text: nameOf(d.id), href: '#/cameras' });
@@ -68,11 +71,27 @@
   // ---- the room's temperature ----------------------------------------------------------
 
   const temp = $derived.by(() => {
+    const skip = tempIgnored(room.name);
     const readings = [...room.sensors, ...room.climates]
-      .filter((d) => d.online !== false)
+      .filter((d) => d.online !== false && !skip.has(d.id))
       .map((d) => value(d.id, 'temperature') ?? value(d.id, 'temp_current'))
       .filter((x) => typeof x === 'number');
     return readings.length ? readings.reduce((a, b) => a + b, 0) / readings.length : null;
+  });
+
+  /** Le capteur dont la température de la pièce vient : c'est son
+   *  historique qu'ouvre le chiffre de l'en-tête. Quand plusieurs capteurs
+   *  se moyennent, l'en-tête dit une moyenne qu'aucune courbe ne porte :
+   *  le chiffre reste alors une simple lecture, pas un bouton. */
+  const tempSource = $derived.by(() => {
+    const skip = tempIgnored(room.name);
+    const sources = [];
+    for (const d of [...room.sensors, ...room.climates]) {
+      if (d.online === false || skip.has(d.id)) continue;
+      const key = readingPoint(d.id, ['temperature', 'temp_current']);
+      if (key && typeof value(d.id, key) === 'number') sources.push({ id: d.id, key });
+    }
+    return sources.length === 1 ? sources[0] : null;
   });
   const tone = (deg) => (deg < 18 ? 'cold' : deg < 20 ? 'cool' : deg <= 24 ? 'good' : deg <= 27 ? 'warm' : 'hot');
   const gaugeAt = (deg) => Math.min(100, Math.max(0, ((deg - 14) / 16) * 100));
@@ -179,7 +198,11 @@
       <span class="muted">{room.lit ? t('commun.piece.allumees', { count: room.lit }) : t('commun.piece.tout_eteint')}</span>
     </div>
     {#if temp != null}
-      <span class="temp {tone(temp)}" title={t('commun.piece.temperature')}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></span>
+      {#if tempSource}
+        <button class="temp {tone(temp)} live" onclick={() => historyOf(tempSource.id, tempSource.key)} title={t('maison.historique.ouvrir', { name: `${room.name} · ${t('commun.piece.temperature')}` })} aria-label={t('maison.historique.ouvrir', { name: `${room.name} · ${t('commun.piece.temperature')}` })}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></button>
+      {:else}
+        <span class="temp {tone(temp)}" title={t('commun.piece.temperature')}><b class="num">{num(temp, 1)}°</b><i class="gauge"><i style="left:{gaugeAt(temp)}%"></i></i></span>
+      {/if}
     {/if}
     {#if lamps.length}
       <button class="round" class:open={showLooks} onclick={() => (showLooks = !showLooks)} aria-expanded={showLooks} title={t('commun.piece.ambiances')} aria-label={t('commun.piece.ambiances_de', { name: room.name })}>
@@ -233,12 +256,20 @@
 
   {#each room.climates as d (d.id)}
     {@const on = isOn(d.id)}
-    <button class="clim" class:on onclick={() => (openClim = openClim === d.id ? null : d.id)} aria-expanded={openClim === d.id}>
-      <Icon name="air-conditioner" size={18} />
-      <b>{nameOf(d.id)}</b>
-      <span class="num">{num(value(d.id, 'temperature'), 0)}° → {num(value(d.id, 'target_temperature'), 1)}°</span>
-      <span class="state">{on ? (MODES[value(d.id, 'mode')] ? t(MODES[value(d.id, 'mode')]) : t('commun.piece.en_marche')) : t('commun.piece.eteinte')}</span>
-    </button>
+    {@const climTempKey = readingPoint(d.id, ['temperature', 'local_temperature'])}
+    <div class="clim" class:on>
+      <button class="clim-main" onclick={() => (openClim = openClim === d.id ? null : d.id)} aria-expanded={openClim === d.id} aria-label={t('commun.piece.regler_nom', { name: nameOf(d.id) })}>
+        <Icon name="air-conditioner" size={18} />
+        <b>{nameOf(d.id)}</b>
+        <span class="state">{on ? (MODES[value(d.id, 'mode')] ? t(MODES[value(d.id, 'mode')]) : t('commun.piece.en_marche')) : t('commun.piece.eteinte')}</span>
+      </button>
+      {#if climTempKey}
+        <button class="clim-temp num live" onclick={() => historyOf(d.id, climTempKey)} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${t('commun.clim.temp_piece')}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(d.id)} · ${t('commun.clim.temp_piece')}` })}>{num(value(d.id, climTempKey), 0)}°</button>
+      {:else}
+        <span class="clim-temp num">—</span>
+      {/if}
+      <span class="clim-target num">→ {num(value(d.id, 'target_temperature'), 1)}°</span>
+    </div>
     {#if openClim === d.id}
       <ClimateCard id={d.id} name={nameOf(d.id)} />
     {/if}
@@ -249,6 +280,9 @@
       {#each sensorChips as c, i (i)}
         {#if c.href}
           <a class="chip {c.tone}" href={c.href}><Icon name={c.icon} size={15} />{c.text}</a>
+        {:else if c.point}
+          {@const cut = c.point.indexOf('/')}
+          <button class="chip {c.tone} live" onclick={() => historyOf(c.point.slice(0, cut), c.point.slice(cut + 1))} title={t('maison.historique.ouvrir', { name: `${spokenNameOf(c.point.slice(0, cut))} · ${c.text}` })} aria-label={t('maison.historique.ouvrir', { name: `${spokenNameOf(c.point.slice(0, cut))} · ${c.text}` })}><Icon name={c.icon} size={15} />{c.text}</button>
         {:else}
           <span class="chip {c.tone}"><Icon name={c.icon} size={15} />{c.text}</span>
         {/if}
@@ -321,6 +355,25 @@
     border-radius: 999px;
     background: var(--surface-2);
     font-size: 13px;
+  }
+
+  /* La température de la pièce ouvre le capteur dont elle vient. */
+  .temp.live {
+    border: 0;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .temp.live:hover {
+      background: var(--surface-3);
+    }
+  }
+
+  .temp.live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 
   .temp b {
@@ -539,20 +592,76 @@
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 10px 14px;
-    border: none;
+    padding: 4px 6px 4px 8px;
     border-radius: var(--r-md);
     background: var(--surface-2);
     color: var(--ink);
+    font: inherit;
+    font-size: 14px;
+  }
+
+  /* La ligne clim : la commande (nom, mode) et le relevé qui ouvre son
+     historique ne partagent plus le même bouton. */
+  .clim-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 6px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
     font: inherit;
     font-size: 14px;
     text-align: left;
     cursor: pointer;
   }
 
+  @media (hover: hover) {
+    .clim-main:hover {
+      background: var(--surface-3);
+    }
+  }
+
   .clim b {
     flex: 1;
     font-weight: 650;
+  }
+
+  .clim .clim-temp {
+    flex: none;
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .clim .clim-temp.live {
+    border: 0;
+    padding: 4px 6px;
+    border-radius: var(--r-sm);
+    background: none;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .clim .clim-temp.live:hover {
+      background: var(--surface-3);
+    }
+  }
+
+  .clim .clim-temp.live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
+  }
+
+  .clim .clim-target {
+    flex: none;
+    font-size: 14px;
+    color: var(--ink-3);
   }
 
   .clim .state {
@@ -573,5 +682,25 @@
 
   .chips a {
     text-decoration: none;
+  }
+
+  /* Un relevé chiffré : la pastille ouvre son historique, elle ne commande
+     rien. Le curseur ne s'affiche qu'au survol capable de le montrer. */
+  .chips .chip.live {
+    border: 0;
+    font: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+
+  @media (hover: hover) {
+    .chips .chip.live:hover {
+      background: var(--surface-3);
+    }
+  }
+
+  .chips .chip.live:focus-visible {
+    outline: 2px solid var(--cool);
+    outline-offset: 2px;
   }
 </style>
