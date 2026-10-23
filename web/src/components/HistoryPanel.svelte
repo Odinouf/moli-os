@@ -2,6 +2,7 @@
   import { hub } from '../lib/hub.svelte.js';
   import { deviceName, formatValue, unitOf } from '../lib/format.js';
   import { t, locale } from '../lib/i18n.svelte.js';
+  import { seriesData, scaleFor, stepPath, bandPath, ticksFor, xTicksFor } from '../lib/history.js';
 
   let { point: pointId, onclose } = $props();
 
@@ -35,68 +36,27 @@
 
   const toNum = (v) => (typeof v === 'boolean' ? Number(v) : typeof v === 'number' ? v : null);
 
-  // Points to draw: [ts, value, min, max].
-  const data = $derived.by(() => {
-    if (!series) return [];
-    const points = series.buckets.length
-      ? series.buckets.map((b) => [b.ts, b.avg, b.min, b.max])
-      : series.raw.map(([ts, v]) => [ts, toNum(v), toNum(v), toNum(v)]);
-    // The value held when the window opens: the line starts at `from`.
-    if (series.before) {
-      const v = toNum(series.before[1]);
-      points.unshift([series.from, v, v, v]);
-    }
-    return points.filter((d) => d[1] !== null);
-  });
+  // Points to draw: [ts, value, min, max] — the shared geometry, same as the
+  // house sheet: two skins, one computation.
+  const data = $derived(seriesData(series));
 
   const binary = $derived(spec?.kind.type === 'binary');
   const textual = $derived(series && data.length === 0 && series.raw.length > 0);
 
-  const scale = $derived.by(() => {
-    if (!series || !data.length) return null;
-    const lo = binary ? 0 : Math.min(...data.map((d) => d[2]));
-    const hi = binary ? 1 : Math.max(...data.map((d) => d[3]));
-    const span = hi - lo || Math.abs(hi) || 1;
-    const y0 = binary ? 0 : lo - span * 0.08;
-    const y1 = binary ? 1 : hi + span * 0.08;
-    const x = (ts) => PAD.l + ((ts - series.from) / (series.to - series.from)) * (W - PAD.l - PAD.r);
-    const y = (v) => PAD.t + (1 - (v - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
-    return { x, y, y0, y1 };
-  });
+  const scale = $derived(scaleFor(series, data, PAD, { w: W, h: H }, binary));
 
   // Step path: a value holds until the next change, then to "now".
-  const line = $derived.by(() => {
-    if (!scale) return '';
-    let d = '';
-    data.forEach(([ts, v], i) => {
-      const px = scale.x(ts);
-      const py = scale.y(v);
-      d += i === 0 ? `M${px},${py}` : `H${px}V${py}`;
-    });
-    return d + `H${scale.x(series.to)}`;
-  });
+  const line = $derived(stepPath(scale, data, series?.to));
 
-  const band = $derived.by(() => {
-    if (!scale || !series.buckets.length) return '';
-    const top = data.map(([ts, , , max]) => `${scale.x(ts)},${scale.y(max)}`);
-    const bottom = data.map(([ts, , min]) => `${scale.x(ts)},${scale.y(min)}`).reverse();
-    return `M${top.join('L')}L${bottom.join('L')}Z`;
-  });
+  const band = $derived(bandPath(scale, data, !!series?.buckets?.length));
 
-  const ticks = $derived.by(() => {
-    if (!scale) return [];
-    if (binary) return [0, 1];
-    const n = 4;
-    return Array.from({ length: n + 1 }, (_, i) => scale.y0 + ((scale.y1 - scale.y0) * i) / n);
-  });
+  const ticks = $derived(ticksFor(scale, binary));
 
   const nf = $derived(new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }));
   const timeFmt = $derived(
     new Intl.DateTimeFormat(locale(), hours > 24 ? { weekday: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }),
   );
-  const xTicks = $derived(
-    series ? Array.from({ length: 5 }, (_, i) => series.from + ((series.to - series.from) * i) / 4) : [],
-  );
+  const xTicks = $derived(xTicksFor(series, 4));
 
   function onkey(e) {
     if (e.key === 'Escape') onclose();

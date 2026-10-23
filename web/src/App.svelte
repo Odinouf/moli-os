@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { hub } from './lib/hub.svelte.js';
   import Maison from './maison/Maison.svelte';
   import Atelier from './Atelier.svelte';
 
@@ -9,7 +10,12 @@
   let route = $state(read());
 
   onMount(() => {
-    const update = () => (route = read());
+    const update = () => {
+      // Le point ouvert appartient à la page qui l'a demandé : changer de
+      // page referme la feuille, sinon elle réapparaîtrait sur l'Accueil.
+      hub.chart = null;
+      route = read();
+    };
     addEventListener('hashchange', update);
     return () => removeEventListener('hashchange', update);
   });

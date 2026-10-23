@@ -35,6 +35,16 @@ export const hub = $state({
 });
 
 const JOURNAL_MAX = 60;
+const eventListeners = new Set();
+
+export function onHubEvent(listener) {
+  eventListeners.add(listener);
+  return () => eventListeners.delete(listener);
+}
+
+function notifyEvent(e) {
+  for (const listener of eventListeners) listener(e);
+}
 
 function applySnapshot(snapshot) {
   const devices = {};
@@ -51,6 +61,7 @@ function splitPoint(point) {
 }
 
 function applyEvent(e) {
+  notifyEvent(e);
   switch (e.type) {
     case 'device_upserted': {
       const prev = hub.devices[e.device.id];
@@ -130,6 +141,7 @@ export function connect() {
   // Every snapshot (first connection, reconnection, catch-up after lag)
   // may follow a gap: reload the journal too.
   source.addEventListener('snapshot', (m) => {
+    notifyEvent({ type: 'snapshot' });
     hub.connected = true;
     applySnapshot(JSON.parse(m.data));
     loadJournal();
