@@ -1,0 +1,35 @@
+# Secrets du foyer : livrés au conteneur par un fichier 0600, jamais dans moli.toml.
+# Voix locale : deux sidecars Wyoming sur la boucle locale (Piper parle,
+# Whisper écoute). Moli s'y branche par [assistant] local_speech / local_listen.
+# Réseau hôte : la voix n'est jamais exposée hors de la machine.
+services:
+  moli-os:
+    env_file:
+      - moli.env
+    # Le namespace de PID du CT : sans lui /proc est un procfs prive ou lxcfs
+    # ne sait pas a quel conteneur il parle (uptime 0, memoire fausse), et le
+    # pilote `host` mesure le PVE (16 coeurs, 15 Go) au lieu du CT125.
+    pid: host
+    volumes:
+      # Le /proc et le /sys du CT, en lecture seule ; `root = "/host"` dans
+      # moli.toml les fait lire (processeur, memoire, temperatures, reseau).
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  moli-piper:
+    image: rhasspy/wyoming-piper:latest
+    container_name: moli-piper
+    restart: unless-stopped
+    network_mode: host
+    command: --voice fr_FR-siwis-medium --uri tcp://127.0.0.1:10200
+    volumes:
+      - ./data/voice/piper:/data
+
+  moli-whisper:
+    image: rhasspy/wyoming-whisper:latest
+    container_name: moli-whisper
+    restart: unless-stopped
+    network_mode: host
+    command: --model tiny-int8 --language fr --uri tcp://127.0.0.1:10300
+    volumes:
+      - ./data/voice/whisper:/data

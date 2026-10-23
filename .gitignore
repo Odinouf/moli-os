@@ -3,3 +3,6 @@
 web/node_modules
 web/dist
 *.bak-*
+
+# Secrets d'environnement du CT125 (jamais commités)
+moli.env
