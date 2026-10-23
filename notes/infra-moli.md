@@ -128,13 +128,20 @@ puis `os.replace`. Aucun lecteur ne voit jamais un JSON tronqué.
       "free": 5145493504, "percent": 75.4 }
   ],
   "backups": [],
-  "failed": []
+  "failed": [],
+  "health": { "ok": true, "last_restart": 1792668189000, "restarts": 1, "paused": false }
 }
 ```
 
 `ts` en millisecondes : la page passe en « relevé ancien » au-delà de 5 min.
 Les quatre tableaux sont **toujours présents**, même vides — `Infra.svelte` lit
 `infra?.backups ?? []` mais `infra.disks` sans garde.
+
+`health` dit ce que le watchdog sait de **ce passage** : `last_restart` (ms, `null` si
+jamais), `restarts` (total depuis l'installation), `paused` (drapeau `/var/lib/moli-infra/pause`)
+et `ok` (aucun redémarrage dans les 10 dernières minutes). Sans lui, un redémarrage par
+surveillance ne laisse **aucune trace lisible** : le hub qui redémarre ne journalise pas son
+propre redémarrage, et l'humain ne voit qu'un trou dans les courbes 6 h de `#/infra`.
 
 ## 3. Surveillance de santé et redémarrage (C3)
 
@@ -146,11 +153,26 @@ C'est ce que fait le même script :
 
 1. `GET http://127.0.0.1:8790/api/health` (timeout 5 s).
 2. Échec → compteur `/var/lib/moli-infra/health-fails` incrémenté.
-3. **2 échecs consécutifs** → `POST /containers/moli-os/restart?t=10`, compteur remis à 0,
-   horodatage dans `/var/lib/moli-infra/last-restart`.
+3. **2 échecs consécutifs** → `POST /containers/<id>/restart?t=10`, compteur remis à 0,
+   horodatage dans `/var/lib/moli-infra/last-restart` et total dans `restarts`.
+   L'horodatage et le compteur ne sont écrits **qu'après un `POST` réussi** : un
+   redémarrage qui échoue (404, socket mort) laisse le compteur en place pour que le
+   passage suivant réessaie, au lieu de brûler le délai de garde et de laisser le hub
+   à terre dix minutes de plus.
 4. **Garde anti-boucle** : au plus **un redémarrage par 10 min** (`RESTART_COOLDOWN`) —
    sans elle, une instance qui ne démarre pas serait relancée toutes les deux minutes.
 5. Succès → compteur remis à 0.
+6. **Verrou d'exécution** : `flock` exclusif sur `/var/lib/moli-infra/lock` pour tout le
+   passage. Le cron tire toutes les 60 s alors qu'un passage fait un `stats` par conteneur
+   actif plus un `systemctl --failed` (10 s) : sans verrou, deux passages se marchaient
+   dessus dans `STATE_DIR` (même panne comptée deux fois → redémarrage sur un seul échec
+   réel, et deux écrivains sur `infra.json`). Un second passage sort en silence.
+7. **Conteneur résolu par son nom une fois par passage** (`/containers/json?all=1`), pas
+   adressé par son nom dans l'URL : un projet compose renommé (`--project-name`, second
+   stack) rendait chaque appel du watchdog en 404 que personne ne lit. L'id est mémorisé
+   et, s'il est introuvable, une ligne explicite le dit et le watchdog s'abstient.
+8. La santé est vérifiée **avant** la mesure, pour que le `health` du JSON décrive bien
+   le passage courant.
 
 ### Ce que le watchdog ne redémarre pas
 
@@ -158,7 +180,7 @@ Un conteneur **arrêté exprès** n'est pas une panne : il ne faut surtout pas l
 milieu d'un restore. `AGENTS.md` §8 impose `docker compose stop moli-os` → `docker run …
 restore` → `start` ; deux minutes plus tard le cron aurait relancé Moli sur une base en
 cours de restauration. Avant de compter un échec, le script lit
-`GET /containers/moli-os/json` et laisse tranquille :
+`GET /containers/<id>/json` (l'id résolu au début du passage) et laisse tranquille :
 
 - `State.Running == true` mais `/api/health` muet → **c'est une panne**, on compte ;
 - conteneur arrêté avec `ExitCode` **0 ou 143** et `OOMKilled == false` → **arrêt
@@ -174,8 +196,10 @@ rm /var/lib/moli-infra/pause        # la rend
 
 Présent, le drapeau remet le compteur à 0 et ne redémarre rien.
 
-Enfin, `watch()` est appelé **même quand la mesure Docker échoue** (démon en cours de
-redémarrage, image en pull, socket absent) : la sonde de santé n'a besoin que de Moli.
+Enfin, la santé est surveillée **avant** la mesure Docker : la sonde n'a besoin que de Moli,
+donc un démon Docker absent (redémarrage, pull, socket) n'empêche plus le watchdog de juger
+et de réparer le hub. La mesure, elle, échoue séparément et laisse `infra.json` intact plutôt
+que de l'écraser avec un relevé vide.
 
 ## 4. Cron
 

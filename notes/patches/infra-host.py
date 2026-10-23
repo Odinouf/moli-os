@@ -10,6 +10,7 @@ Standard library only. Installed as `/usr/local/bin/moli-infra`, run every
 minute by root's cron.
 """
 
+import fcntl
 import http.client
 import json
 import os
@@ -26,6 +27,8 @@ OUT = os.path.join(DATA_DIR, "infra.json")
 STATE_DIR = os.environ.get("MOLI_INFRA_STATE", "/var/lib/moli-infra")
 FAILS = os.path.join(STATE_DIR, "health-fails")
 LAST_RESTART = os.path.join(STATE_DIR, "last-restart")
+RESTARTS = os.path.join(STATE_DIR, "restarts")
+LOCK = os.path.join(STATE_DIR, "lock")
 PAUSE = os.path.join(STATE_DIR, "pause")
 DOCKER_SOCK = os.environ.get("MOLI_DOCKER_SOCK", "/var/run/docker.sock")
 HUB = os.environ.get("MOLI_HUB", "http://127.0.0.1:8790")
@@ -130,6 +133,41 @@ def containers():
     return out
 
 
+_hub_id = None
+_hub_missing = False
+
+
+def hub_container_id():
+    """The hub's container id, matched on its name.
+
+    The Docker API accepts a name in the path, but only as long as the name is
+    exactly right: a renamed compose project would turn every watchdog call into
+    a 404 that nobody reads. Resolving the id once and failing loudly beats
+    degrading silently — and the loud part happens once per run, not per call.
+    """
+    global _hub_id, _hub_missing
+    if _hub_id is not None:
+        return _hub_id
+    if _hub_missing:
+        return None
+    try:
+        for c in api("/containers/json?all=1") or []:
+            names = [n.lstrip("/") for n in (c.get("Names") or [])]
+            if HUB_CONTAINER in names:
+                _hub_id = c["Id"]
+                return _hub_id
+    except (RuntimeError, OSError) as exc:
+        sys.stderr.write(f"moli-infra: cannot list containers: {exc}\n")
+        _hub_missing = True
+        return None
+    sys.stderr.write(
+        f"moli-infra: no container named {HUB_CONTAINER!r}: "
+        "watchdog cannot restart the hub (set MOLI_CONTAINER)\n"
+    )
+    _hub_missing = True
+    return None
+
+
 def disks():
     out = []
     for path, label in DISKS:
@@ -209,9 +247,10 @@ def write_int(path, value):
 
 
 def hub_healthy():
+    """True when `/api/health` answers. urlopen already raises on non-2xx."""
     try:
-        with urllib.request.urlopen(f"{HUB}/api/health", timeout=HEALTH_TIMEOUT) as res:
-            return res.status == 200
+        with urllib.request.urlopen(f"{HUB}/api/health", timeout=HEALTH_TIMEOUT):
+            return True
     except (urllib.error.URLError, OSError, ValueError):
         return False
 
@@ -223,8 +262,12 @@ def stopped_on_purpose():
     `State.Running == false` with a clean exit (0/143, not OOM-killed). Blindly
     restarting then would relaunch the hub in the middle of a restore.
     """
+    cid = hub_container_id()
+    if cid is None:
+        # Cannot tell a deliberate stop from a crash: judge on health alone.
+        return False
     try:
-        state = (api(f"/containers/{HUB_CONTAINER}/json") or {}).get("State") or {}
+        state = (api(f"/containers/{cid}/json") or {}).get("State") or {}
     except Exception as exc:  # noqa: BLE001 - no daemon: judge on health alone
         sys.stderr.write(f"moli-infra: cannot read {HUB_CONTAINER} state: {exc}\n")
         return False
@@ -256,17 +299,75 @@ def watch():
     if now - read_int(LAST_RESTART) < RESTART_COOLDOWN:
         write_int(FAILS, 0)
         return
+    cid = hub_container_id()
+    if cid is None:
+        return
     sys.stderr.write(f"moli-infra: {fails} failed health checks, restarting {HUB_CONTAINER}\n")
     try:
-        request("POST", f"/containers/{HUB_CONTAINER}/restart?t=10")
+        request("POST", f"/containers/{cid}/restart?t=10")
     except Exception as exc:  # noqa: BLE001 - a missing daemon is reported, not fatal
+        # The restart did not happen: burning the cooldown here would leave the
+        # hub down ten more minutes for nothing. Keep the counter so the next
+        # minute tries again.
         sys.stderr.write(f"moli-infra: restart failed: {exc}\n")
+        return
     write_int(LAST_RESTART, now)
+    write_int(RESTARTS, read_int(RESTARTS) + 1)
     write_int(FAILS, 0)
 
 
+def lock():
+    """Exclusive run lock, held for the whole run.
+
+    Cron fires every minute while a run does one `stats` call per running
+    container plus a `systemctl --failed`. Two overlapping runs would race in
+    STATE_DIR: the same outage counted twice (restarting the hub on a single
+    real failure) and two writers on `infra.json`.
+    """
+    os.makedirs(STATE_DIR, exist_ok=True)
+    handle = open(LOCK, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def health_state():
+    """What the watchdog knows, so the dashboard can explain a blink.
+
+    A restart leaves no trace in the hub's own journal (it is the hub that
+    restarts): without this, the human sees a silent gap in the 6 h curves.
+    """
+    last = read_int(LAST_RESTART)
+    return {
+        "ok": last == 0 or int(time.time()) - last > RESTART_COOLDOWN,
+        "last_restart": last * 1000 or None,
+        "restarts": read_int(RESTARTS),
+        "paused": os.path.exists(PAUSE),
+    }
+
+
 def main():
+    handle = lock()
+    if handle is None:
+        return 0
+    try:
+        return run()
+    finally:
+        handle.close()
+
+
+def run():
     code = 0
+    # Health supervision needs no Docker for the probe itself: run it first, so
+    # the payload below reports the watchdog state of *this* minute.
+    try:
+        watch()
+    except Exception as exc:  # noqa: BLE001 - a watchdog must never crash the cron
+        sys.stderr.write(f"moli-infra: watch failed: {exc}\n")
+        code = 1
     try:
         payload = {
             "ts": int(time.time() * 1000),
@@ -274,19 +375,12 @@ def main():
             "disks": disks(),
             "backups": [],
             "failed": failed_services(),
+            "health": health_state(),
         }
     except Exception as exc:  # noqa: BLE001 - never leave a stale file silently
         sys.stderr.write(f"moli-infra: measurement failed: {exc}\n")
-        code = 1
-    else:
-        write(payload)
-    # Health supervision needs no Docker for the probe itself: run it even when
-    # the measurement failed (daemon restarting, image pull, socket gone).
-    try:
-        watch()
-    except Exception as exc:  # noqa: BLE001 - a watchdog must never crash the cron
-        sys.stderr.write(f"moli-infra: watch failed: {exc}\n")
-        code = 1
+        return 1
+    write(payload)
     return code
 
 
