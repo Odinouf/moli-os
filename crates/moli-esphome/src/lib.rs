@@ -15,6 +15,7 @@ mod noise;
 mod satellite;
 mod sound;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
@@ -134,12 +135,65 @@ fn device(
     ctx: &DriverCtx,
     info: &api::DeviceInfo,
     hello: &frame::ServerHello,
+    entities: &Entities,
 ) -> Device {
     let name = [&info.friendly_name, &info.name, &hello.name]
         .into_iter()
         .find(|n| !n.is_empty())
         .cloned()
         .unwrap_or_default();
+    let mut points = vec![
+        spec(
+            "state",
+            &moli_i18n::tr!("pilotes.esphome.etat"),
+            Kind::Enum {
+                values: STATES.iter().map(|s| (*s).into()).collect(),
+            },
+            false,
+            None,
+        ),
+        spec(
+            "volume",
+            &moli_i18n::tr!("pilotes.esphome.volume"),
+            Kind::Numeric {
+                min: Some(0.0),
+                max: Some(100.0),
+                step: Some(1.0),
+            },
+            true,
+            Some(Unit::Percent),
+        ),
+        spec(
+            "muted",
+            &moli_i18n::tr!("pilotes.esphome.sourdine"),
+            Kind::Binary,
+            true,
+            None,
+        ),
+        spec(
+            "wake_word",
+            &moli_i18n::tr!("pilotes.esphome.mot_activation"),
+            Kind::Text,
+            false,
+            None,
+        ),
+        spec(
+            "say",
+            &moli_i18n::tr!("pilotes.esphome.dire"),
+            Kind::Text,
+            true,
+            None,
+        ),
+    ];
+    // Every entity the device listed, as its own point. The voice points
+    // above keep their keys: a device that also has a `state` entity keeps
+    // both (the driver's is what automations read).
+    for entity in &entities.published {
+        if points.iter().any(|p| p.key == entity.spec.key) {
+            continue;
+        }
+        points.push(entity.spec.clone());
+    }
     Device {
         id: id.clone(),
         instance: ctx.instance().clone(),
@@ -158,49 +212,7 @@ fn device(
         description: None,
         native_room: None,
         members: Vec::new(),
-        points: vec![
-            spec(
-                "state",
-                &moli_i18n::tr!("pilotes.esphome.etat"),
-                Kind::Enum {
-                    values: STATES.iter().map(|s| (*s).into()).collect(),
-                },
-                false,
-                None,
-            ),
-            spec(
-                "volume",
-                &moli_i18n::tr!("pilotes.esphome.volume"),
-                Kind::Numeric {
-                    min: Some(0.0),
-                    max: Some(100.0),
-                    step: Some(1.0),
-                },
-                true,
-                Some(Unit::Percent),
-            ),
-            spec(
-                "muted",
-                &moli_i18n::tr!("pilotes.esphome.sourdine"),
-                Kind::Binary,
-                true,
-                None,
-            ),
-            spec(
-                "wake_word",
-                &moli_i18n::tr!("pilotes.esphome.mot_activation"),
-                Kind::Text,
-                false,
-                None,
-            ),
-            spec(
-                "say",
-                &moli_i18n::tr!("pilotes.esphome.dire"),
-                Kind::Text,
-                true,
-                None,
-            ),
-        ],
+        points,
     }
 }
 
@@ -467,6 +479,122 @@ impl Drop for Reader {
 struct Entities {
     media_player: Option<u32>,
     button: Option<u32>,
+    /// Every entity Moli publishes, for the state and command routing.
+    published: Vec<Published>,
+}
+
+/// One listed entity, as a point of the device.
+#[derive(Clone, Debug)]
+struct Published {
+    /// The entity's API key, as used in every state and command message.
+    key: u32,
+    kind: api::EntityKind,
+    /// The point as published (its key is the entity's `object_id`).
+    spec: PointSpec,
+    /// The allowed values of a select.
+    options: Vec<Arc<str>>,
+}
+
+impl Entities {
+    fn by_key(&self, key: u32) -> Option<&Published> {
+        self.published.iter().find(|p| p.key == key)
+    }
+}
+
+/// A point key from the entity's `object_id`: lowercase ascii, `_` for
+/// anything else; a numbered fallback when the device gives none, and a
+/// numeric suffix on a collision.
+fn point_key(object_id: &str, key: u32, name: &str, taken: &mut std::collections::HashSet<String>) -> Arc<str> {
+    let mut base: String = object_id
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    base = base.trim_matches('_').to_owned();
+    if base.is_empty() {
+        let from_name: String = name
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        base = from_name.trim_matches('_').to_owned();
+    }
+    if base.is_empty() || base.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        base = format!("e_{base}_{key:x}");
+    }
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while !taken.insert(candidate.clone()) {
+        candidate = format!("{base}_{n}");
+        n += 1;
+    }
+    candidate.into()
+}
+
+/// A `PointSpec` for a listed entity, and what the driver needs to route it.
+fn published_point(info: &api::EntityInfo, kind: api::EntityKind, point: Arc<str>) -> Published {
+    let unit = info.unit.as_deref().and_then(moli_core::Unit::parse);
+    let label: Arc<str> = if info.name.is_empty() {
+        info.object_id.clone().into()
+    } else {
+        info.name.clone().into()
+    };
+    let (spec_kind, options, write): (Kind, Vec<Arc<str>>, bool) = match kind {
+        api::EntityKind::BinarySensor => (Kind::Binary, Vec::new(), false),
+        api::EntityKind::Switch | api::EntityKind::Light => (Kind::Binary, Vec::new(), true),
+        api::EntityKind::Sensor => (
+            Kind::Numeric {
+                min: None,
+                max: None,
+                step: None,
+            },
+            Vec::new(),
+            false,
+        ),
+        api::EntityKind::Number => (
+            Kind::Numeric {
+                min: info.min.map(f64::from),
+                max: info.max.map(f64::from),
+                step: info.step.map(f64::from),
+            },
+            Vec::new(),
+            true,
+        ),
+        api::EntityKind::TextSensor => (Kind::Text, Vec::new(), false),
+        api::EntityKind::Select => {
+            let values: Vec<Arc<str>> =
+                info.options.iter().map(|o| Arc::from(o.as_str())).collect();
+            (
+                Kind::Enum {
+                    values: values.clone(),
+                },
+                values,
+                true,
+            )
+        }
+        api::EntityKind::Button => (Kind::Binary, Vec::new(), true),
+        api::EntityKind::Camera => (Kind::Binary, Vec::new(), false),
+    };
+    let semantic = if kind == api::EntityKind::Button {
+        Semantic::Control
+    } else {
+        Semantic::infer(&point, unit.as_ref())
+    };
+    Published {
+        key: info.key,
+        kind,
+        spec: PointSpec {
+            key: point,
+            label,
+            kind: spec_kind,
+            access: Access { read: true, write },
+            unit,
+            semantic,
+        },
+        options,
+    }
 }
 
 /// A connection open and introduced: hello said, the device and its entities known.
@@ -477,6 +605,88 @@ struct Opened {
     hello: frame::ServerHello,
     info: api::DeviceInfo,
     entities: Entities,
+}
+
+/// A camera of an ESPHome device, answered from its live connection. One
+/// per camera: the driver sets the slot's key while the device is connected,
+/// and clears it otherwise (a snapshot then fails fast).
+#[derive(Clone, Debug)]
+struct Snapshots {
+    key: u32,
+    /// The pending reply, while a viewer waits.
+    pending: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>>,
+    /// Image bytes received so far (a camera answers in several messages).
+    buf: Arc<std::sync::Mutex<Vec<u8>>>,
+    /// Rung when a viewer is waiting: the session sends the request.
+    asked: Arc<tokio::sync::Notify>,
+}
+
+impl Snapshots {
+    fn new(key: u32) -> Self {
+        Self {
+            key,
+            pending: Arc::new(std::sync::Mutex::new(None)),
+            buf: Arc::new(std::sync::Mutex::new(Vec::new())),
+            asked: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    /// Takes the pending reply, if a viewer waits (consumes it).
+    fn take(&self) -> Option<tokio::sync::oneshot::Sender<Vec<u8>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    fn clear(&self) {
+        let _ = self.take();
+        self.buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// One image message from the device: pooled, then handed to the viewer
+    /// once the device says it is complete.
+    fn deliver(&self, key: u32, data: &[u8], done: bool) {
+        if key != self.key {
+            return;
+        }
+        let mut buf = self.buf.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        buf.extend_from_slice(data);
+        if done {
+            let bytes = std::mem::take(&mut *buf);
+            drop(buf);
+            if let Some(reply) = self.take() {
+                let _ = reply.send(bytes);
+            }
+        }
+    }
+}
+
+impl moli_runtime::media::SnapshotSource for Snapshots {
+    fn snapshot(&self) -> BoxFuture<'_, anyhow::Result<moli_runtime::media::Image>> {
+        Box::pin(async move {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reply);
+            self.asked.notify_one();
+            let bytes = tokio::time::timeout(Duration::from_secs(15), rx)
+                .await
+                .map_err(|_| anyhow::anyhow!("no image in time"))?
+                .map_err(|_| anyhow::anyhow!("the device is not connected"))?;
+            if bytes.is_empty() {
+                anyhow::bail!("the camera sent no image");
+            }
+            Ok(moli_runtime::media::Image {
+                content_type: "image/jpeg".into(),
+                bytes,
+            })
+        })
+    }
 }
 
 /// Connects, does the handshake, says hello, reads the device and its entities.
@@ -507,12 +717,22 @@ async fn open(config: &Config, psk: &[u8; 32]) -> anyhow::Result<Opened> {
         .context("unreadable device info")?;
     tx.send(api::LIST_ENTITIES_REQUEST, &[]).await?;
     let mut entities = Entities::default();
+    let mut taken = std::collections::HashSet::new();
     loop {
         let (kind, payload) = next(&mut inbox, &mut tx).await?;
         match kind {
             api::LIST_ENTITIES_DONE => break,
             api::LIST_MEDIA_PLAYER => entities.media_player = api::entity(&payload).map(|e| e.key),
             api::LIST_EVENT => entities.button = api::entity(&payload).map(|e| e.key),
+            api::LIST_BINARY_SENSOR => list_entity(&mut entities, &mut taken, api::EntityKind::BinarySensor, &payload),
+            api::LIST_SENSOR => list_entity(&mut entities, &mut taken, api::EntityKind::Sensor, &payload),
+            api::LIST_SWITCH => list_entity(&mut entities, &mut taken, api::EntityKind::Switch, &payload),
+            api::LIST_TEXT_SENSOR => list_entity(&mut entities, &mut taken, api::EntityKind::TextSensor, &payload),
+            api::LIST_LIGHT => list_entity(&mut entities, &mut taken, api::EntityKind::Light, &payload),
+            api::LIST_NUMBER => list_entity(&mut entities, &mut taken, api::EntityKind::Number, &payload),
+            api::LIST_SELECT => list_entity(&mut entities, &mut taken, api::EntityKind::Select, &payload),
+            api::LIST_BUTTON => list_entity(&mut entities, &mut taken, api::EntityKind::Button, &payload),
+            api::LIST_CAMERA => list_entity(&mut entities, &mut taken, api::EntityKind::Camera, &payload),
             _ => {}
         }
     }
@@ -524,6 +744,21 @@ async fn open(config: &Config, psk: &[u8; 32]) -> anyhow::Result<Opened> {
         info,
         entities,
     })
+}
+
+/// Adds one listed entity to the catalog, unless its point collapses with
+/// one already there (a device repeating a name is not worth a broken point).
+fn list_entity(
+    entities: &mut Entities,
+    taken: &mut std::collections::HashSet<String>,
+    kind: api::EntityKind,
+    payload: &[u8],
+) {
+    let Some(info) = api::entity_info(kind, payload) else {
+        return;
+    };
+    let point = point_key(&info.object_id, info.key, &info.name, taken);
+    entities.published.push(published_point(&info, kind, point));
 }
 
 /// One connection, from the handshake until it fails (`Err`) or Moli stops (`Ok`).
@@ -542,15 +777,18 @@ async fn session(
         entities,
     } = open(config, psk).await?;
     let id = ctx.device_id(&hello.mac);
-    ctx.upsert_device(device(&id, ctx, &info, &hello));
+    ctx.upsert_device(device(&id, ctx, &info, &hello, &entities));
     ctx.set_state(&id, "state", Value::Text("idle".into()));
     ctx.set_availability(&id, true);
     *known = Some(id.clone());
+    // A camera of the device: its images are answered from this connection.
+    let camera = camera_slot(&id, ctx, &entities);
     tracing::info!(
         instance = %ctx.instance(),
         device = %info.friendly_name,
         esphome = %info.esphome_version,
         voice_flags = info.voice_flags,
+        entities = entities.published.len(),
         "esphome device connected"
     );
     tx.send(api::SUBSCRIBE_STATES, &[]).await?;
@@ -582,7 +820,7 @@ async fn session(
                 if kind == api::VOICE_CONFIGURATION_RESPONSE {
                     words_set |= wake_words(ctx, &mut tx, &config.wake_words, words_set, &payload).await?;
                 } else {
-                    on_message(ctx, &id, &mut tx, &entities, &mut voice, kind, &payload).await?;
+                    on_message(ctx, &id, &mut tx, &entities, &mut voice, &camera, kind, &payload).await?;
                 }
             }
             Some((generation, thought)) = thoughts.recv() => {
@@ -597,14 +835,47 @@ async fn session(
             }
             command = ctx.next_command() => {
                 let Some(command) = command else {
+                    if let Some(source) = &camera {
+                        source.clear();
+                    }
                     let _ = tx.send(api::DISCONNECT_REQUEST, &[]).await;
                     return Ok(());
                 };
                 let result = order(ctx, &mut tx, &entities, config.media_base.as_deref(), &command).await;
                 command.reply(result);
             }
+            () = camera_asked(&camera) => camera_request(&mut tx, &camera).await?,
         }
     }
+}
+
+/// The device's camera, when it has one: a source registered with the hub so
+/// its images are answered from this live connection.
+fn camera_slot(id: &DeviceId, ctx: &DriverCtx, entities: &Entities) -> Option<Arc<Snapshots>> {
+    let published = entities
+        .published
+        .iter()
+        .find(|p| p.kind == api::EntityKind::Camera)?;
+    let source = Arc::new(Snapshots::new(published.key));
+    ctx.provide_snapshots(id, Arc::clone(&source) as Arc<dyn moli_runtime::media::SnapshotSource>);
+    Some(source)
+}
+
+/// Waits until a viewer asks for an image (never, without a camera).
+async fn camera_asked(camera: &Option<Arc<Snapshots>>) {
+    match camera {
+        Some(source) => source.asked.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Sends the device a one-shot image request.
+async fn camera_request(tx: &mut Outbox, camera: &Option<Arc<Snapshots>>) -> anyhow::Result<()> {
+    if camera.is_some() {
+        tx.send(api::CAMERA_IMAGE_REQUEST, &api::camera_image_request(true))
+            .await?;
+    }
+    Ok(())
 }
 
 /// The wake words to set: those of `wanted` the firmware has, unless they
@@ -671,6 +942,7 @@ async fn on_message(
     tx: &mut Outbox,
     entities: &Entities,
     voice: &mut satellite::Voice,
+    camera: &Option<Arc<Snapshots>>,
     kind: u16,
     payload: &[u8],
 ) -> anyhow::Result<()> {
@@ -715,9 +987,53 @@ async fn on_message(
                 voice.on_button(ctx, id, tx, &event).await?;
             }
         }
+        api::BINARY_SENSOR_STATE => {
+            if let Some(state) = api::binary_state(payload) {
+                record_state(ctx, id, entities, &state);
+            }
+        }
+        api::SWITCH_STATE => {
+            if let Some(state) = api::switch_state(payload) {
+                record_state(ctx, id, entities, &state);
+            }
+        }
+        api::SENSOR_STATE | api::NUMBER_STATE => {
+            if let Some(state) = api::sensor_state(payload) {
+                record_state(ctx, id, entities, &state);
+            }
+        }
+        api::TEXT_SENSOR_STATE | api::SELECT_STATE => {
+            if let Some(state) = api::text_state(payload) {
+                record_state(ctx, id, entities, &state);
+            }
+        }
+        api::LIGHT_STATE => {
+            if let Some((state, _brightness)) = api::light_state(payload) {
+                record_state(ctx, id, entities, &state);
+            }
+        }
+        api::CAMERA_IMAGE => {
+            if let (Some(source), Some((key, data, done))) = (camera, api::camera_image(payload)) {
+                source.deliver(key, &data, done);
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+fn record_state(ctx: &DriverCtx, id: &DeviceId, entities: &Entities, state: &api::EntityState) {
+    let Some(entity) = entities.by_key(state.key) else {
+        return;
+    };
+    if state.missing {
+        return;
+    }
+    let value = match &state.value {
+        api::StateValue::Bool(b) => Value::Bool(*b),
+        api::StateValue::Float(f) => Value::Float(f64::from(*f)),
+        api::StateValue::Text(t) => Value::Text(t.as_str().into()),
+    };
+    ctx.set_state(id, &entity.spec.key, value);
 }
 
 /// Until `at`; forever without one (a `select!` branch that never fires).
@@ -731,8 +1047,9 @@ async fn until(at: Option<Instant>) {
 /// What a satellite may say at once.
 const MAX_SAY: usize = 500;
 
-/// A command for the device: the volume or mute of its media player, or a
-/// sentence in Moli's voice (an announcement over what it plays).
+/// A command for the device: one of its published entities (a switch, a
+/// number, a select, a light, a button), or the volume/mute/say of its
+/// media player.
 async fn order(
     ctx: &DriverCtx,
     tx: &mut Outbox,
@@ -740,6 +1057,18 @@ async fn order(
     media_base: Option<&str>,
     command: &CommandRequest,
 ) -> Result<(), String> {
+    // An entity Moli listed: it carries its own key and shape.
+    if let Some(entity) = entities
+        .published
+        .iter()
+        .find(|p| &*p.spec.key == &*command.key)
+    {
+        let payload = entity_command(entity, &command.value)?;
+        return tx
+            .send(payload.0, &payload.1)
+            .await
+            .map_err(|e| format!("{e:#}"));
+    }
     let key = entities
         .media_player
         .ok_or_else(|| moli_i18n::tr!("pilotes.esphome.sans_lecteur"))?;
@@ -777,6 +1106,43 @@ async fn order(
     tx.send(api::MEDIA_PLAYER_COMMAND, &payload)
         .await
         .map_err(|e| format!("{e:#}"))
+}
+
+/// The message that sets one entity: the kind's command, and the value.
+fn entity_command(
+    entity: &Published,
+    value: &Value,
+) -> Result<(u16, Vec<u8>), String> {
+    let key = entity.key;
+    let message = match (entity.kind, value) {
+        (api::EntityKind::Switch, Value::Bool(on)) => {
+            (api::SWITCH_COMMAND, api::switch_command(key, *on))
+        }
+        (api::EntityKind::Light, Value::Bool(on)) => {
+            (api::LIGHT_COMMAND, api::light_command(key, *on))
+        }
+        (api::EntityKind::Number, v) => {
+            let n = v
+                .as_f64()
+                .ok_or_else(|| moli_i18n::tr!("pilotes.esphome.lecture_seule", point = &entity.spec.key))?;
+            #[allow(clippy::cast_possible_truncation)]
+            (api::NUMBER_COMMAND, api::number_command(key, n as f32))
+        }
+        (api::EntityKind::Select, Value::Text(option)) => {
+            if !entity.options.iter().any(|o| &**o == &**option) {
+                return Err(moli_i18n::tr!("pilotes.esphome.lecture_seule", point = &entity.spec.key));
+            }
+            (api::SELECT_COMMAND, api::select_command(key, option))
+        }
+        (api::EntityKind::Button, _) => (api::BUTTON_COMMAND, api::button_command(key)),
+        (_, _) => {
+            return Err(moli_i18n::tr!(
+                "pilotes.esphome.lecture_seule",
+                point = &entity.spec.key
+            ));
+        }
+    };
+    Ok(message)
 }
 
 /// The next message, the device's pings answered on the way.
